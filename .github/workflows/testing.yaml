@@ -2,7 +2,30 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Action test/validation workflow
+# Action test/validation workflow.
+#
+# The GitHub Actions runner does NOT execute an action's pre: hook
+# when the action is referenced as a local action (`uses: ./`); only
+# main runs. The runner emits a warning to that effect. All of this
+# action's load + sanitise + exportVariable logic lives in pre.mjs,
+# so a `uses: ./` self-test would silently skip the real code path.
+#
+# These tests therefore invoke `node src/pre.mjs` directly, with the
+# inputs supplied via the documented INPUT_* env-var protocol and
+# the runner outputs (GITHUB_ENV / GITHUB_OUTPUT / GITHUB_STEP_SUMMARY)
+# redirected to temporary files. Asserts on exit code and on the
+# captured env/output files give us the same coverage we would have
+# wanted from a self-`uses: ./` integration test, without the local-
+# action pre limitation.
+#
+# End-to-end integration with step-security/harden-runner — where
+# the action runs by full owner/repo@ref reference, the pre: hook
+# actually fires, and a sibling harden-runner step consumes the
+# published env var in block mode — lives in
+# .github/workflows/integration.yaml. That workflow triggers on
+# push to main (i.e. after merge) so it can reference the
+# just-merged action by its public ref.
+
 name: "Test GitHub Action 🧪"
 
 # yamllint disable-line rule:truthy
@@ -20,56 +43,505 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
-  tests:
-    name: "Test local GitHub Action"
+  ### Happy path: valid local allow-list file. Asserts the action
+  ### exits 0, writes the env var, writes outputs, and that the
+  ### published value is the sanitised whitespace-collapsed list.
+  test-happy-path-local-file:
+    name: "Happy path: local file"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 5
     steps:
-      # Harden the runner used by this workflow
-      # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
-        with:
-          egress-policy: audit
-
       - name: "Checkout repository"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
+      - name: "Stage local allow-list file"
+        id: stage
         shell: bash
         run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Stage local allow-list file
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/local-allow-list.txt"
+          cat > "$al_file" <<'EOF'
+          # Test allow-list (multi-line, comments allowed)
+          github.com:443
+          api.github.com:443
+          *.githubusercontent.com:443  # inline comment
+          objects.githubusercontent.com:443
+          EOF
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
 
-      - name: "Running local action: ${{ github.repository }}"
-        uses: ./
-        with:
-          input: "test input 💬"
+      - name: "Run pre.mjs (action under test)"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+          INPUT_URL: ""
+          INPUT_ORG: ""
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs (action under test)
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env"
+          : > "$captured_out"
+          : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
 
-      - name: "Validated local action: ${{ github.repository }}"
+          echo "::group::Captured GITHUB_ENV"
+          cat "$captured_env"
+          echo "::endgroup::"
+          echo "::group::Captured GITHUB_OUTPUT"
+          cat "$captured_out"
+          echo "::endgroup::"
+
+          # Assertions.
+          if ! grep -q '^CONNECTION_ALLOW_LIST=github\.com:443 ' \
+                 "$captured_env"; then
+            echo "Error: CONNECTION_ALLOW_LIST missing or wrong ❌"
+            exit 1
+          fi
+          if ! grep -q 'objects\.githubusercontent\.com:443' \
+                 "$captured_env"; then
+            echo "Error: last entry missing from env ❌"
+            exit 1
+          fi
+          if ! grep -q '^source=path$' "$captured_out"; then
+            echo "Error: source output != path ❌"
+            exit 1
+          fi
+          if ! grep -q '^resolved_url=$' "$captured_out"; then
+            echo "Error: resolved_url not empty for path source ❌"
+            exit 1
+          fi
+          # Inline comments must be stripped.
+          if grep -q 'inline comment' "$captured_env"; then
+            echo "Error: inline '#' comment leaked into env ❌"
+            exit 1
+          fi
+          echo "Happy-path local-file assertions passed ✅"
+
+  ### Happy path: URL fetch via the default URL constructor. Confirms
+  ### the action can reach raw.githubusercontent.com and that the
+  ### sanitiser accepts a real-world allow-list.
+  test-happy-path-default-url:
+    name: "Happy path: default URL"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs against the default URL"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ""
+          INPUT_URL: ""
+          INPUT_ORG: "lfreleng-actions"
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs against the default URL
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          if ! grep -q '^source=default-url$' "$captured_out"; then
+            echo "Error: source output != default-url ❌"
+            exit 1
+          fi
+          # The expected resolved_url is long; split the literal
+          # across two shell variables so the line stays <80 cols.
+          want_url_a="^resolved_url=https://raw.githubusercontent.com"
+          want_url_b="/lfreleng-actions/.github/HEAD/"
+          want_url_c=".github/harden-runner/lfreleng-actions/allow_list.txt$"
+          want_url="${want_url_a}${want_url_b}${want_url_c}"
+          if ! grep -Eq "$want_url" "$captured_out"; then
+            echo "Error: resolved_url wrong ❌"
+            cat "$captured_out"
+            exit 1
+          fi
+          # Env var should carry a non-trivial number of endpoints.
+          # Use wc -w (word count): wc -l would undercount by 1 when
+          # the captured value has no trailing newline.
+          count=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//' | wc -w | tr -d ' ')
+          if [ "$count" -lt 10 ]; then
+            echo "Error: expected >=10 endpoints, got $count ❌"
+            exit 1
+          fi
+          echo "Happy-path default-URL assertions passed ($count endpoints) ✅"
+
+  ### Custom env var name. Asserts that pre.mjs publishes to the
+  ### requested env var and NOT to the default name.
+  test-custom-env-var:
+    name: "Custom env_var_name"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs with custom env_var_name"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ""
+          INPUT_URL: ""
+          INPUT_ORG: "lfreleng-actions"
+          INPUT_ENV_VAR_NAME: "MY_ALLOW_LIST"
+        run: |
+          # Run pre.mjs with custom env_var_name
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          if ! grep -q '^MY_ALLOW_LIST=' "$captured_env"; then
+            echo "Error: MY_ALLOW_LIST not published ❌"
+            exit 1
+          fi
+          if grep -q '^CONNECTION_ALLOW_LIST=' "$captured_env"; then
+            echo "Error: default CONNECTION_ALLOW_LIST unexpectedly published ❌"
+            exit 1
+          fi
+          echo "Custom env_var_name assertions passed ✅"
+
+  ### Failure: shell metacharacter token. Asserts the action exits
+  ### non-zero and does NOT publish a partial allow-list.
+  test-rejects-bad-input:
+    name: "Rejects shell metacharacters"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Stage malicious allow-list file"
+        id: stage
         shell: bash
         run: |
-          # Local action validation
-          echo "Validated local action: ${{ github.repository }}"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Stage malicious allow-list file
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/bad-allow-list.txt"
+          # shellcheck disable=SC2016
+          printf '%s\n' 'github.com:443 evil.com:443;`whoami`' > "$al_file"
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
 
-      # yamllint disable-line rule:line-length
-      - name: "Running local action: ${{ github.repository }} [Override Failure]"
-        uses: ./
-        id: failure
-        continue-on-error: true
-        with:
-          invalid_input: "Some garbage"
+      - name: "Run pre.mjs against malicious file"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+          INPUT_URL: ""
+          INPUT_ORG: ""
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs against malicious file
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: pre.mjs accepted malicious token (exit 0) ❌"
+            cat "$captured_env"
+            exit 1
+          fi
+          # Must NOT publish the env var when the sanitiser rejects.
+          if grep -q '^CONNECTION_ALLOW_LIST=' "$captured_env"; then
+            echo "Error: env var published despite failure ❌"
+            exit 1
+          fi
+          echo "Sanitiser correctly rejected metacharacters (exit $rc) ✅"
 
-      # Failure testing is also important
-      - name: "Error if step above did NOT fail"
-        if: steps.failure.outcome == 'success'
+  ### Failure: port out of range. Asserts the action rejects tokens
+  ### whose port survives the regex but is not a real TCP/UDP port.
+  test-rejects-bad-port:
+    name: "Rejects port out of range"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Stage allow-list with bad port"
+        id: stage
         shell: bash
         run: |
-          # Error if step above did NOT fail
-          echo "Error: previous test step did NOT fail ❌"
-          exit 1
+          # Stage allow-list with bad port
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/badport-allow-list.txt"
+          echo 'evil.com:99999' > "$al_file"
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
+
+      - name: "Run pre.mjs against bad-port file"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+          INPUT_URL: ""
+          INPUT_ORG: ""
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs against bad-port file
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: pre.mjs accepted out-of-range port (exit 0) ❌"
+            exit 1
+          fi
+          echo "Sanitiser correctly rejected port 99999 (exit $rc) ✅"
+
+  ### Failure: missing file. Asserts the action exits non-zero when
+  ### given a path that does not exist.
+  test-rejects-missing-file:
+    name: "Rejects missing file"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs against missing file"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: "/tmp/does-not-exist-9f3a2b.txt"
+          INPUT_URL: ""
+          INPUT_ORG: ""
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs against missing file
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: pre.mjs accepted missing file (exit 0) ❌"
+            exit 1
+          fi
+          echo "Sanitiser correctly rejected missing file (exit $rc) ✅"
+
+  ### Failure: invalid env_var_name (lowercase). Asserts the regex
+  ### gate fires before any file/network work.
+  test-rejects-invalid-env-var-name:
+    name: "Rejects invalid env_var_name"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs with lowercase env_var_name"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ""
+          INPUT_URL: ""
+          INPUT_ORG: "lfreleng-actions"
+          INPUT_ENV_VAR_NAME: "lowercase_var"
+        run: |
+          # Run pre.mjs with lowercase env_var_name
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: pre.mjs accepted invalid env_var_name (exit 0) ❌"
+            exit 1
+          fi
+          echo "Invalid env_var_name correctly rejected (exit $rc) ✅"
+
+  ### Failure: newline in path input. Asserts the injection guard
+  ### fires.
+  test-rejects-newline-in-path:
+    name: "Rejects newline in path input"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs with newline in path"
+        shell: bash
+        # Use a multi-line literal so the path input actually
+        # contains a newline character.
+        env:
+          INPUT_ALLOW_LIST_PATH: |
+            /tmp/innocent
+            INJECTED=evil
+          INPUT_URL: ""
+          INPUT_ORG: ""
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs with newline in path
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: pre.mjs accepted newline in path (exit 0) ❌"
+            exit 1
+          fi
+          if grep -q '^INJECTED=' "$captured_env"; then
+            echo "Error: env injection succeeded ❌"
+            exit 1
+          fi
+          echo "Newline-in-path correctly rejected (exit $rc) ✅"
+
+  ### Redaction: URL credentials, query string, and fragment must not
+  ### leak into the captured $GITHUB_OUTPUT or $GITHUB_STEP_SUMMARY
+  ### when the user supplies a URL containing any of those. The
+  ### actual fetch will probably 404 (we point at the canonical
+  ### lfreleng-actions allow-list with fake credentials), but the
+  ### test is only interested in what gets recorded BEFORE / DURING
+  ### the fetch attempt.
+  test-redacts-url-credentials:
+    name: "Redacts URL credentials / query / fragment"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs against a credential-bearing URL"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ""
+          # yamllint disable-line rule:line-length
+          INPUT_URL: "https://leak-user:leak-pass@raw.githubusercontent.com/lfreleng-actions/.github/HEAD/.github/harden-runner/lfreleng-actions/allow_list.txt?token=topsecret#frag"
+          INPUT_ORG: ""
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Run pre.mjs against a credential-bearing URL
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/captured_env"
+          captured_out="${RUNNER_TEMP}/captured_out"
+          captured_sum="${RUNNER_TEMP}/captured_sum"
+          captured_stdout="${RUNNER_TEMP}/captured_stdout"
+          captured_stderr="${RUNNER_TEMP}/captured_stderr"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          : > "$captured_stdout" ; : > "$captured_stderr"
+          # The fetch will likely fail (HTTP 401 / 404), which is
+          # fine: the test inspects what got written to the
+          # GITHUB_* files BEFORE the failure terminates the
+          # script. We allow either exit code.
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs > "$captured_stdout" 2> "$captured_stderr"
+          rc=$?
+          set -e
+          echo "pre.mjs exit code: $rc"
+          echo "::group::stdout (workflow commands)"
+          cat "$captured_stdout"
+          echo "::endgroup::"
+          echo "::group::captured GITHUB_OUTPUT"
+          cat "$captured_out"
+          echo "::endgroup::"
+          echo "::group::captured GITHUB_STEP_SUMMARY"
+          cat "$captured_sum"
+          echo "::endgroup::"
+
+          # The captured GITHUB_OUTPUT and GITHUB_STEP_SUMMARY must
+          # not contain any of the secret components. The error
+          # annotation channel (stdout '::error::') is also part of
+          # what the runner shows users, so we check it too. (We
+          # do not check captured_stderr: stderr is not parsed by
+          # the runner as workflow commands and is generally only
+          # visible in raw logs to a workflow author.)
+          leaks=0
+          for needle in 'leak-user' 'leak-pass' 'token=topsecret' '#frag'; do
+            for file in "$captured_out" "$captured_sum" "$captured_stdout"; do
+              if grep -F -q "$needle" "$file"; then
+                echo "❌ LEAK: '$needle' found in $(basename "$file")"
+                leaks=$((leaks + 1))
+              fi
+            done
+          done
+          if [ "$leaks" -ne 0 ]; then
+            echo "$leaks leak(s) detected ❌"
+            exit 1
+          fi
+          # Positive assertion: the redacted form (scheme + host +
+          # path) MUST appear in the captured stdout (which includes
+          # the 'Source: ...' info line and the '::error::' annotation
+          # that surfaces the fetch failure) so users can still see
+          # which endpoint the action tried to reach. The action
+          # exits non-zero before writing step outputs when the
+          # fetch fails, so we cannot assert on captured_out here.
+          expected_url="https://raw.githubusercontent.com/lfreleng-actions/.github/HEAD/.github/harden-runner/lfreleng-actions/allow_list.txt"
+          if ! grep -F -q "$expected_url" "$captured_stdout"; then
+            echo "Error: expected redacted URL not found in stdout ❌"
+            exit 1
+          fi
+          echo "URL redaction validated ✅"

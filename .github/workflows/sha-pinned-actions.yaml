@@ -2,7 +2,28 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# Verifies action/workflow calls are pinned to SHA commit values
+# Verifies action/workflow calls are pinned to SHA commit values.
+#
+# We invoke gha-workflow-linter directly here (rather than via the
+# upstream lfit/releng-reusable-workflows/reuse-verify-github-actions
+# reusable workflow) because we need to exclude one file from the
+# SHA-pinning check:
+#
+#   .github/workflows/integration.yaml
+#
+# That workflow references this action by its own public ref —
+# `lfreleng-actions/harden-runner-block-action@main` — so that the
+# step-security/harden-runner sibling step can consume the env var
+# we populate in 'pre:'. A local `uses: ./` reference does not run
+# pre hooks, and the GitHub Actions 'uses:' field does not accept
+# expressions (so '@${{ github.sha }}' cannot interpolate). '@main'
+# is therefore the closest we can get on a post-merge integration
+# test; the rest of the repo's workflows remain SHA-pinned and that
+# remains audited.
+#
+# The reusable workflow we bypass otherwise has no input for
+# excluding specific files. Once it gains one, we can switch back.
+
 name: 'Audit GitHub Actions 📌'
 
 # yamllint disable-line rule:truthy
@@ -23,7 +44,49 @@ concurrency:
 jobs:
   verify:
     name: 'Check SHA pinned actions'
-    # yamllint disable-line rule:line-length
-    uses: lfit/releng-reusable-workflows/.github/workflows/reuse-verify-github-actions.yaml@9b7880d03148ac73ba5f4e32d423b322db94ebc1  # v0.3.4
+    runs-on: 'ubuntu-24.04'
     permissions:
       contents: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout pull request'
+        if: github.event_name == 'pull_request'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: 'Checkout repository'
+        if: github.event_name != 'pull_request'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: 'Setup uv'
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: false
+
+      - name: 'Run gha-workflow-linter (with explicit exclusion)'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # See header comment for why integration.yaml is excluded.
+          # Pin the linter to an exact version so this audit is
+          # deterministic: a new gha-workflow-linter release will
+          # not break CI without a corresponding bump here.
+          uvx --from 'gha-workflow-linter==1.0.4' \
+            gha-workflow-linter lint \
+              --no-auto-fix \
+              --exclude '.github/workflows/integration.yaml' \
+              .

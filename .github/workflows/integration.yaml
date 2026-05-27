@@ -1,0 +1,89 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Post-merge integration test.
+#
+# Triggers on every push to main and on manual workflow_dispatch.
+# Tests that the action, when referenced by a full owner/repo@ref
+# (and therefore with its pre: hook actually invoked by the GitHub
+# Actions runner), publishes the env var early enough for a sibling
+# step-security/harden-runner step to consume it in 'block' egress
+# mode.
+#
+# This is the integration coverage that testing.yaml deliberately
+# does NOT provide: testing.yaml invokes `node src/pre.mjs` directly
+# because `uses: ./` (local action reference) skips pre hooks. The
+# canonical pre-hook propagation path can therefore only get
+# exercised against a non-local action reference. The workflow uses
+# `@main` rather than a per-commit SHA pin because the GitHub
+# Actions 'uses:' field does not support expressions — see the
+# step-level comment below for the trade-off.
+
+name: "Integration test (post-merge) 🔗"
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  end-to-end-block-mode:
+    name: "End-to-end: loader + harden-runner block mode"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # Load the allow-list. We pin to '@main' rather than to a
+      # specific commit SHA because the GitHub Actions 'uses:'
+      # field does not support expressions (so `${{ github.sha }}`
+      # would not interpolate). For a workflow that fires on
+      # push to main, '@main' is the just-pushed commit anyway;
+      # the small race window with a later push is acceptable for
+      # an integration test.
+      - name: "Load allow-list (action under test, full ref)"
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@main
+        with:
+          org: 'lfreleng-actions'
+
+      # Sibling harden-runner step. Its pre: hook reads
+      # ${{ env.CONNECTION_ALLOW_LIST }} (populated by the loader's
+      # pre, which ran earlier in the pre phase) and configures the
+      # network filter in block mode. A successful run end-to-end
+      # confirms the pre-phase env var propagation works.
+      - name: "Harden runner (block mode, consuming loader env var)"
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: block
+          allowed-endpoints: ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # Confirm block-mode enforcement actually has a usable
+      # allow-list. The fetched lfreleng-actions allow-list includes
+      # api.github.com:443, so this curl must succeed.
+      - name: "Validate block-mode network access"
+        shell: bash
+        run: |
+          # Validate block-mode network access
+          set -euo pipefail
+          if [ -z "${CONNECTION_ALLOW_LIST:-}" ]; then
+            echo "Error: CONNECTION_ALLOW_LIST not present in env ❌"
+            exit 1
+          fi
+          # Use wc -w (word count): wc -l would undercount by 1 if
+          # the env var value has no trailing newline.
+          count=$(printf '%s' "$CONNECTION_ALLOW_LIST" | wc -w \
+            | tr -d ' ')
+          echo "Loader published $count endpoints"
+          curl --fail --silent --show-error --max-time 10 \
+            -o /dev/null https://api.github.com/zen
+          echo "Block-mode enforcement working with loaded list ✅"
