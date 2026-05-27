@@ -3,9 +3,9 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # harden-runner-block-action
-name: "🛡️ Harden Runner: Block with Whitelist"
+name: "🛡️ Harden Runner: Block with Allow-list"
 description: >
-  Loads an allowed-endpoints connection whitelist from a local file or remote
+  Loads an allowed-endpoints connection allow-list from a local file or remote
   URL (with sensible defaults), sanitises it, and publishes it as an
   environment variable for a subsequent step-security/harden-runner step to
   consume in 'block' egress mode.
@@ -17,7 +17,7 @@ description: >
 #     from the resolved org as:
 #       https://raw.githubusercontent.com/<ORG>/.github/HEAD/\
 #         .github/harden-runner/<ORG>/allow_list.txt
-#   - Whitelist content is sanitised to a strict allow-list character set
+#   - Allow-list content is sanitised to a strict allow-list character set
 #     before being exported, to avoid passing shell metacharacters / injection
 #     vectors through the workflow environment.
 #   - This action does NOT invoke step-security/harden-runner itself.
@@ -31,21 +31,21 @@ description: >
 inputs:
   path:
     description: >
-      Local filesystem path to a whitelist file. When supplied, the 'url' and
+      Local filesystem path to a allow-list file. When supplied, the 'url' and
       'org' inputs are ignored. The file must contain a list of host:port
       entries separated by whitespace (single or multi-line accepted).
     required: false
     default: ""
   url:
     description: >
-      Remote URL from which to download the whitelist file. Ignored when
+      Remote URL from which to download the allow-list file. Ignored when
       'path' is supplied. When neither 'path' nor 'url' is provided, a
       default URL is constructed using the 'org' input.
     required: false
     default: ""
   org:
     description: >
-      GitHub organisation/owner used to construct the default whitelist URL.
+      GitHub organisation/owner used to construct the default allow-list URL.
       When omitted, defaults at runtime to the current repository owner
       (github.repository_owner). Ignored when 'path' is set or 'url' is
       supplied explicitly.
@@ -58,28 +58,28 @@ inputs:
       cannot start with a digit). The default matches the existing org
       variable naming convention.
     required: false
-    default: "CONNECTION_WHITELIST"
+    default: "CONNECTION_ALLOW_LIST"
 
 outputs:
   allowed_endpoints:
     description: >
-      The sanitised, space-separated allowed-endpoints whitelist string.
+      The sanitised, space-separated allowed-endpoints allow-list string.
     value: ${{ steps.sanitise.outputs.allowed_endpoints }}
   source:
     description: >
-      The source from which the whitelist was loaded: 'path', 'url' or
+      The source from which the allow-list was loaded: 'path', 'url' or
       'default-url'.
     value: ${{ steps.resolve.outputs.source }}
   resolved_url:
     description: >
-      When the whitelist was fetched from a URL, the URL that was used.
+      When the allow-list was fetched from a URL, the URL that was used.
     value: ${{ steps.resolve.outputs.resolved_url }}
 
 runs:
   using: "composite"
   steps:
-    # Step 1: Decide where the whitelist will come from.
-    - name: "Resolve whitelist source"
+    # Step 1: Decide where the allow-list will come from.
+    - name: "Resolve allow-list source"
       id: resolve
       shell: bash
       env:
@@ -88,7 +88,7 @@ runs:
         INPUT_ORG: ${{ inputs.org }}
         REPO_OWNER: ${{ github.repository_owner }}
       run: |
-        # Resolve whitelist source
+        # Resolve allow-list source
         set -euo pipefail
 
         in_path="${INPUT_PATH:-}"
@@ -97,9 +97,11 @@ runs:
 
         # Reject newlines in path/url inputs. Newlines here would break
         # the simple KEY=VALUE form used by $GITHUB_OUTPUT below and
-        # could be abused to inject additional workflow outputs.
+        # could be abused to inject additional workflow outputs. Use
+        # bash indirect expansion (${!var}) rather than eval to keep
+        # this loop safe and lint-friendly.
         for var_name in INPUT_PATH INPUT_URL; do
-          eval "val=\${$var_name:-}"
+          val="${!var_name:-}"
           case "$val" in
             *$'\n'*|*$'\r'*)
               echo "Error: '$var_name' contains a newline character ❌"
@@ -131,7 +133,6 @@ runs:
           fi
           resolved_url="https://raw.githubusercontent.com/${org}/.github/HEAD/.github/harden-runner/${org}/allow_list.txt"
           src="default-url"
-          echo "org=$org" >> "$GITHUB_OUTPUT"
         fi
 
         echo "source=$src" >> "$GITHUB_OUTPUT"
@@ -140,13 +141,16 @@ runs:
         # so that two concurrent invocations on the same runner never share
         # a file, and so that the path is unguessable. The file is removed
         # again by the cleanup step at the end of this action.
+        # File is inside RUNNER_TEMP; harden-runner agent / runner
+        # may also store files there, hence the name prefix.
         tmpdir="${RUNNER_TEMP:-/tmp}"
-        download_path=$(mktemp "${tmpdir}/harden-runner-whitelist.XXXXXXXX.txt")
+        tmpl="${tmpdir}/harden-runner-allow-list.XXXXXXXX.txt"
+        download_path=$(mktemp "$tmpl")
         echo "resolved_path=$download_path" >> "$GITHUB_OUTPUT"
         echo "Source: $src -> $resolved_url ✅"
 
     # Step 2: Fetch via lfreleng-actions/url-download-action when needed.
-    - name: "Download whitelist from URL"
+    - name: "Download allow-list from URL"
       if: steps.resolve.outputs.source != 'path'
       # yamllint disable-line rule:line-length
       uses: lfreleng-actions/url-download-action@fea05e25548bffe5c238e669f534ef33de1f827d  # v0.1.4
@@ -155,19 +159,19 @@ runs:
         path: ${{ steps.resolve.outputs.resolved_path }}
         exit_on_fail: "true"
 
-    # Step 3: Read, sanitise, validate, and publish the whitelist.
-    - name: "Sanitise whitelist content"
+    # Step 3: Read, sanitise, validate, and publish the allow-list.
+    - name: "Sanitise allow-list content"
       id: sanitise
       shell: bash
       env:
-        WHITELIST_FILE: ${{ steps.resolve.outputs.resolved_path }}
+        ALLOW_LIST_FILE: ${{ steps.resolve.outputs.resolved_path }}
         ENV_VAR_NAME: ${{ inputs.env_var_name }}
       run: |
-        # Sanitise whitelist content
+        # Sanitise allow-list content
         set -euo pipefail
 
-        if [ ! -f "$WHITELIST_FILE" ]; then
-          echo "Error: whitelist file not found at: $WHITELIST_FILE ❌"
+        if [ ! -f "$ALLOW_LIST_FILE" ]; then
+          echo "Error: allow-list file not found at: $ALLOW_LIST_FILE ❌"
           exit 1
         fi
 
@@ -181,17 +185,19 @@ runs:
           exit 1
         fi
 
-        # Read file. Strip a leading UTF-8 BOM if present, strip comment
-        # lines (starting with '#'), collapse all whitespace (including
-        # newlines and tabs) into single spaces, and trim.
-        raw=$(sed '1s/^\xEF\xBB\xBF//' "$WHITELIST_FILE" \
+        # Read file. Strip a leading UTF-8 BOM if present, strip any
+        # '#' comment (full-line OR inline/trailing on a non-comment
+        # line, including the leading whitespace before the '#'),
+        # collapse all whitespace (including newlines and tabs) into
+        # single spaces, and trim.
+        raw=$(sed '1s/^\xEF\xBB\xBF//' "$ALLOW_LIST_FILE" \
               | sed -E 's/(^|[[:space:]])#.*$//' \
               | tr '\n\r\t' '   ' \
               | tr -s ' ' \
               | sed -E 's/^ +//; s/ +$//')
 
         if [ -z "$raw" ]; then
-          echo "Error: whitelist file is empty after parsing ❌"
+          echo "Error: allow-list file is empty after parsing ❌"
           exit 1
         fi
 
@@ -200,21 +206,47 @@ runs:
         # optionally followed by ':<port>'. Allowed host characters are
         # letters, digits, dot, hyphen, and asterisk for subdomain
         # wildcarding (e.g. '*.githubusercontent.com'). Ports must be
-        # numeric, 1-5 digits.
+        # numeric, 1-5 digits AND within the real TCP/UDP port range
+        # (1-65535); the regex enforces the syntactic shape and the
+        # explicit numeric check below enforces the value range so that
+        # tokens like 'evil.com:0' or 'evil.com:99999' are rejected
+        # here rather than later by harden-runner.
+        #
+        # Disable pathname expansion (set -f) for the duration of the
+        # token loop: tokens legitimately contain '*' (e.g. for
+        # subdomain wildcards) and without noglob bash would expand
+        # them against files in the workspace, producing an unstable
+        # allow-list. Re-enable globbing afterwards (set +f).
         token_re='^[A-Za-z0-9*][A-Za-z0-9.*-]*(:[0-9]{1,5})?$'
         sanitised=""
+        set -f
         for token in $raw; do
           if ! printf '%s' "$token" | grep -Eq "$token_re"; then
-            echo "Error: rejected whitelist token '$token' ❌"
+            echo "Error: rejected allow-list token '$token' ❌"
             echo "Only host[:port] entries with [A-Za-z0-9.*-] are accepted."
+            set +f
             exit 1
           fi
+          # If the token carries a port, enforce 1-65535.
+          case "$token" in
+            *:*)
+              port="${token##*:}"
+              if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+                msg="Error: rejected allow-list token '$token'"
+                msg="$msg (port out of range 1-65535) ❌"
+                echo "$msg"
+                set +f
+                exit 1
+              fi
+              ;;
+          esac
           if [ -z "$sanitised" ]; then
             sanitised="$token"
           else
             sanitised="$sanitised $token"
           fi
         done
+        set +f
 
         # Publish to subsequent steps via GITHUB_ENV (single-line value, so
         # the simple KEY=VALUE form is safe), and as a step output.
@@ -224,29 +256,29 @@ runs:
         # Counts in step summary; do not echo the full list to logs to
         # keep noise down (it can be long).
         count=$(printf '%s\n' "$sanitised" | wc -w | tr -d ' ')
-        echo "Loaded ${count} whitelist endpoints ✅"
+        echo "Loaded ${count} allow-list endpoints ✅"
         {
-          echo "### 🛡️ Harden Runner Whitelist"
+          echo "### 🛡️ Harden Runner Allow-list"
           echo ""
           echo "- Endpoints loaded: **${count}**"
           echo "- Published as env var: \`${ENV_VAR_NAME}\`"
         } >> "$GITHUB_STEP_SUMMARY"
 
-    # Step 4: Remove the downloaded whitelist file from the runner. We only
+    # Step 4: Remove the downloaded allow-list file from the runner. We only
     # delete files we created via mktemp (i.e. when the source was a URL);
     # a user-supplied local 'path' is left untouched. 'always()' ensures the
-    # cleanup runs even if a later step fails. The sanitised whitelist value
+    # cleanup runs even if a later step fails. The sanitised allow-list value
     # has already been published to the environment and outputs above, so
     # the on-disk copy is no longer needed.
-    - name: "Cleanup downloaded whitelist"
+    - name: "Cleanup downloaded allow-list"
       if: always() && steps.resolve.outputs.source != 'path'
       shell: bash
       env:
         DOWNLOAD_PATH: ${{ steps.resolve.outputs.resolved_path }}
       run: |
-        # Cleanup downloaded whitelist
+        # Cleanup downloaded allow-list
         set -euo pipefail
         if [ -n "${DOWNLOAD_PATH:-}" ] && [ -f "$DOWNLOAD_PATH" ]; then
           rm -f -- "$DOWNLOAD_PATH"
-          echo "Removed temporary whitelist file ✅"
+          echo "Removed temporary allow-list file ✅"
         fi

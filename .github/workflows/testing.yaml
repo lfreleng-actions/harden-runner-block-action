@@ -22,7 +22,7 @@ permissions: {}
 jobs:
   ### Prepare-only + downstream harden-runner (the canonical usage) ###
   test-with-harden-runner:
-    name: "Loads whitelist + downstream harden-runner"
+    name: "Loads allow-list + downstream harden-runner"
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,36 +31,36 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Stage a local whitelist file so this test does not depend on a
+      # Stage a local allow-list file so this test does not depend on a
       # remote resource being reachable.
-      - name: "Stage local whitelist file"
+      - name: "Stage local allow-list file"
         id: stage
         shell: bash
         run: |
-          # Stage local whitelist file
+          # Stage local allow-list file
           set -euo pipefail
-          wl_file="${RUNNER_TEMP}/local-whitelist.txt"
-          cat > "$wl_file" <<'EOF'
-          # Test whitelist (multi-line, comments allowed)
+          al_file="${RUNNER_TEMP}/local-allow-list.txt"
+          cat > "$al_file" <<'EOF'
+          # Test allow-list (multi-line, comments allowed)
           github.com:443
           api.github.com:443
           *.githubusercontent.com:443
           objects.githubusercontent.com:443
           EOF
-          echo "wl_file=$wl_file" >> "$GITHUB_OUTPUT"
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
 
       - name: "Running local action: prepare env var"
         id: block
         uses: ./
         with:
-          path: ${{ steps.stage.outputs.wl_file }}
+          path: ${{ steps.stage.outputs.al_file }}
 
       - name: "Validate action outputs and env var"
         shell: bash
         env:
           EP: ${{ steps.block.outputs.allowed_endpoints }}
           SRC: ${{ steps.block.outputs.source }}
-          WL_FILE: ${{ steps.stage.outputs.wl_file }}
+          WL_FILE: ${{ steps.stage.outputs.al_file }}
         run: |
           # Validate action outputs and env var
           set -euo pipefail
@@ -78,14 +78,14 @@ jobs:
               *) echo "Error: $host missing from allowed_endpoints ❌"; exit 1 ;;
             esac
           done
-          # CONNECTION_WHITELIST must be exported to the environment.
-          if [ -z "${CONNECTION_WHITELIST:-}" ]; then
-            echo "Error: CONNECTION_WHITELIST env var not set ❌"
+          # CONNECTION_ALLOW_LIST must be exported to the environment.
+          if [ -z "${CONNECTION_ALLOW_LIST:-}" ]; then
+            echo "Error: CONNECTION_ALLOW_LIST env var not set ❌"
             exit 1
           fi
           # The user-supplied local 'path' file must NOT be deleted.
           if [ ! -f "$WL_FILE" ]; then
-            echo "Error: user-supplied local whitelist was deleted ❌"
+            echo "Error: user-supplied local allow-list was deleted ❌"
             exit 1
           fi
           echo "Action outputs and env var validated ✅"
@@ -100,7 +100,7 @@ jobs:
         with:
           egress-policy: audit
           allowed-endpoints: >
-            ${{ env.CONNECTION_WHITELIST }}
+            ${{ env.CONNECTION_ALLOW_LIST }}
 
   ### Custom env var name ###
   test-custom-env-var:
@@ -113,33 +113,33 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: "Stage local whitelist file"
+      - name: "Stage local allow-list file"
         id: stage
         shell: bash
         run: |
-          # Stage local whitelist file
+          # Stage local allow-list file
           set -euo pipefail
-          wl_file="${RUNNER_TEMP}/local-whitelist.txt"
-          echo "github.com:443 api.github.com:443" > "$wl_file"
-          echo "wl_file=$wl_file" >> "$GITHUB_OUTPUT"
+          al_file="${RUNNER_TEMP}/local-allow-list.txt"
+          echo "github.com:443 api.github.com:443" > "$al_file"
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
 
       - name: "Running local action with custom env var name"
         uses: ./
         with:
-          path: ${{ steps.stage.outputs.wl_file }}
-          env_var_name: "MY_WHITELIST"
+          path: ${{ steps.stage.outputs.al_file }}
+          env_var_name: "MY_ALLOW_LIST"
 
       - name: "Validate custom env var"
         shell: bash
         run: |
           # Validate custom env var
           set -euo pipefail
-          if [ -z "${MY_WHITELIST:-}" ]; then
-            echo "Error: MY_WHITELIST not set ❌"
+          if [ -z "${MY_ALLOW_LIST:-}" ]; then
+            echo "Error: MY_ALLOW_LIST not set ❌"
             exit 1
           fi
-          if [ -n "${CONNECTION_WHITELIST:-}" ]; then
-            echo "Error: default CONNECTION_WHITELIST unexpectedly set ❌"
+          if [ -n "${CONNECTION_ALLOW_LIST:-}" ]; then
+            echo "Error: default CONNECTION_ALLOW_LIST unexpectedly set ❌"
             exit 1
           fi
           echo "Custom env var validated ✅"
@@ -152,6 +152,13 @@ jobs:
       contents: read
     timeout-minutes: 10
     steps:
+      # Checkout so 'uses: ./' below has explicit access to action.yaml
+      # in the workspace (the runner also fetches action sources for
+      # 'uses: ./' refs internally, but explicit checkout matches the
+      # other test jobs and keeps the workflow self-documenting).
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       # Resolve the correct commit SHA for raw.githubusercontent.com. On
       # pull_request events, ${{ github.sha }} refers to a synthetic merge
       # commit that does NOT exist on raw.githubusercontent.com, which would
@@ -174,13 +181,39 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Using sha=$sha for raw.githubusercontent.com fetch"
 
+      # Preflight: confirm the raw URL is reachable BEFORE invoking the
+      # action under test. Without this, a transient network failure /
+      # 5xx / DNS hiccup would make the test pass for the wrong reason
+      # (continue-on-error catches the download failure and treats it
+      # like a sanitiser rejection). The preflight isolates network
+      # health from sanitiser behaviour: if this step fails, we know
+      # it is an infrastructure problem, not the SUT.
+      # The URL is split across two `env:` entries because the
+      # full URL exceeds yamllint's 80-column limit.
+      - name: "Preflight raw URL reachability"
+        shell: bash
+        env:
+          RAW_BASE: "https://raw.githubusercontent.com"
+          # yamllint disable-line rule:line-length
+          URL_PATH: "${{ github.repository }}/${{ steps.rawsha.outputs.sha }}/README.md"
+        run: |
+          # Preflight raw URL reachability
+          set -euo pipefail
+          url="${RAW_BASE}/${URL_PATH}"
+          echo "HEAD $url"
+          # --fail makes 4xx/5xx exit non-zero. --retry covers transient blips.
+          curl --fail --silent --show-error --location --head \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --max-time 15 "$url" > /dev/null
+          echo "Preflight OK ✅"
+
       - name: "Running local action: explicit URL"
         id: urltest
         uses: ./
         with:
           # Use the action's own README from raw.githubusercontent.com as
           # a remote source — but the README contains characters that are
-          # not valid in a whitelist, so this case is expected to FAIL the
+          # not valid in a allow-list, so this case is expected to FAIL the
           # sanitiser. We intentionally test that path here.
           # yamllint disable-line rule:line-length
           url: "https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.rawsha.outputs.sha }}/README.md"
@@ -200,7 +233,7 @@ jobs:
         run: |
           echo "URL fetch + sanitiser rejection validated ✅"
 
-  ### Failure: malformed whitelist contents (shell metacharacters) ###
+  ### Failure: malformed allow-list contents (shell metacharacters) ###
   test-rejects-bad-input:
     name: "Rejects shell metacharacters"
     runs-on: ubuntu-latest
@@ -211,27 +244,27 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: "Stage malicious whitelist file"
+      - name: "Stage malicious allow-list file"
         id: stage
         shell: bash
         run: |
-          # Stage malicious whitelist file
+          # Stage malicious allow-list file
           set -euo pipefail
-          wl_file="${RUNNER_TEMP}/bad-whitelist.txt"
+          al_file="${RUNNER_TEMP}/bad-allow-list.txt"
           # Contains a token with a backtick / command substitution payload.
           # The single-quoted payload below is intentionally literal; the
           # whole point of this test is to confirm the sanitiser rejects
           # it instead of letting the shell expand the backticks.
           # shellcheck disable=SC2016
-          printf '%s\n' 'github.com:443 evil.com:443;`whoami`' > "$wl_file"
-          echo "wl_file=$wl_file" >> "$GITHUB_OUTPUT"
+          printf '%s\n' 'github.com:443 evil.com:443;`whoami`' > "$al_file"
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
 
       - name: "Running local action with bad input"
         id: bad
         uses: ./
         continue-on-error: true
         with:
-          path: ${{ steps.stage.outputs.wl_file }}
+          path: ${{ steps.stage.outputs.al_file }}
 
       - name: "Error if bad input was accepted"
         if: steps.bad.outcome == 'success'
@@ -255,6 +288,10 @@ jobs:
       contents: read
     timeout-minutes: 5
     steps:
+      # Checkout so 'uses: ./' has explicit access to action.yaml.
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: "Running local action with missing file"
         id: missing
         uses: ./
