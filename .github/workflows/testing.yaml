@@ -20,56 +20,258 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
-  tests:
-    name: "Test local GitHub Action"
+  ### Prepare-only + downstream harden-runner (the canonical usage) ###
+  test-with-harden-runner:
+    name: "Loads whitelist + downstream harden-runner"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 10
     steps:
-      # Harden the runner used by this workflow
-      # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@9ca718d3bf646d6534007c269a635b3e54cadf99 # v2.19.2
-        with:
-          egress-policy: audit
-
       - name: "Checkout repository"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
+      # Stage a local whitelist file so this test does not depend on a
+      # remote resource being reachable.
+      - name: "Stage local whitelist file"
+        id: stage
         shell: bash
         run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Stage local whitelist file
+          set -euo pipefail
+          wl_file="${RUNNER_TEMP}/local-whitelist.txt"
+          cat > "$wl_file" <<'EOF'
+          # Test whitelist (multi-line, comments allowed)
+          github.com:443
+          api.github.com:443
+          *.githubusercontent.com:443
+          objects.githubusercontent.com:443
+          EOF
+          echo "wl_file=$wl_file" >> "$GITHUB_OUTPUT"
 
-      - name: "Running local action: ${{ github.repository }}"
+      - name: "Running local action: prepare env var"
+        id: block
         uses: ./
         with:
-          input: "test input 💬"
+          path: ${{ steps.stage.outputs.wl_file }}
 
-      - name: "Validated local action: ${{ github.repository }}"
+      - name: "Validate action outputs and env var"
+        shell: bash
+        env:
+          EP: ${{ steps.block.outputs.allowed_endpoints }}
+          SRC: ${{ steps.block.outputs.source }}
+          WL_FILE: ${{ steps.stage.outputs.wl_file }}
+        run: |
+          # Validate action outputs and env var
+          set -euo pipefail
+          if [ "$SRC" != "path" ]; then
+            echo "Error: expected source=path, got '$SRC' ❌"
+            exit 1
+          fi
+          # yamllint disable rule:line-length
+          for host in github.com:443 api.github.com:443 \
+              '*.githubusercontent.com:443' \
+              objects.githubusercontent.com:443; do
+          # yamllint enable rule:line-length
+            case " $EP " in
+              *" $host "*) ;;
+              *) echo "Error: $host missing from allowed_endpoints ❌"; exit 1 ;;
+            esac
+          done
+          # CONNECTION_WHITELIST must be exported to the environment.
+          if [ -z "${CONNECTION_WHITELIST:-}" ]; then
+            echo "Error: CONNECTION_WHITELIST env var not set ❌"
+            exit 1
+          fi
+          # The user-supplied local 'path' file must NOT be deleted.
+          if [ ! -f "$WL_FILE" ]; then
+            echo "Error: user-supplied local whitelist was deleted ❌"
+            exit 1
+          fi
+          echo "Action outputs and env var validated ✅"
+
+      # Now invoke harden-runner using the published env var, just as a
+      # downstream workflow would. This is the canonical sibling-step
+      # pattern: harden-runner's pre/post lifecycle requires that it run
+      # as a direct workflow step, not nested inside a composite action.
+      - name: "Harden runner (using prepared env var)"
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            ${{ env.CONNECTION_WHITELIST }}
+
+  ### Custom env var name ###
+  test-custom-env-var:
+    name: "Custom env_var_name"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Stage local whitelist file"
+        id: stage
         shell: bash
         run: |
-          # Local action validation
-          echo "Validated local action: ${{ github.repository }}"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Stage local whitelist file
+          set -euo pipefail
+          wl_file="${RUNNER_TEMP}/local-whitelist.txt"
+          echo "github.com:443 api.github.com:443" > "$wl_file"
+          echo "wl_file=$wl_file" >> "$GITHUB_OUTPUT"
 
-      # yamllint disable-line rule:line-length
-      - name: "Running local action: ${{ github.repository }} [Override Failure]"
+      - name: "Running local action with custom env var name"
         uses: ./
-        id: failure
+        with:
+          path: ${{ steps.stage.outputs.wl_file }}
+          env_var_name: "MY_WHITELIST"
+
+      - name: "Validate custom env var"
+        shell: bash
+        run: |
+          # Validate custom env var
+          set -euo pipefail
+          if [ -z "${MY_WHITELIST:-}" ]; then
+            echo "Error: MY_WHITELIST not set ❌"
+            exit 1
+          fi
+          if [ -n "${CONNECTION_WHITELIST:-}" ]; then
+            echo "Error: default CONNECTION_WHITELIST unexpectedly set ❌"
+            exit 1
+          fi
+          echo "Custom env var validated ✅"
+
+  ### URL mode: explicit URL using a small file from this repository. ###
+  test-url-mode:
+    name: "URL mode (explicit url input)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # Resolve the correct commit SHA for raw.githubusercontent.com. On
+      # pull_request events, ${{ github.sha }} refers to a synthetic merge
+      # commit that does NOT exist on raw.githubusercontent.com, which would
+      # make the download fail for the wrong reason (network 404 rather than
+      # sanitiser rejection). Fall back to the PR head SHA for PR events.
+      - name: "Resolve raw content SHA"
+        id: rawsha
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          # Resolve raw content SHA
+          set -euo pipefail
+          if [ -n "${PR_HEAD_SHA:-}" ]; then
+            sha="$PR_HEAD_SHA"
+          else
+            sha="$GH_SHA"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Using sha=$sha for raw.githubusercontent.com fetch"
+
+      - name: "Running local action: explicit URL"
+        id: urltest
+        uses: ./
+        with:
+          # Use the action's own README from raw.githubusercontent.com as
+          # a remote source — but the README contains characters that are
+          # not valid in a whitelist, so this case is expected to FAIL the
+          # sanitiser. We intentionally test that path here.
+          # yamllint disable-line rule:line-length
+          url: "https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.rawsha.outputs.sha }}/README.md"
+        continue-on-error: true
+
+      - name: "Error if URL+invalid content was accepted"
+        if: steps.urltest.outcome == 'success'
+        shell: bash
+        run: |
+          # Error if URL+invalid content was accepted
+          echo "Error: sanitiser failed to reject invalid content ❌"
+          exit 1
+
+      - name: "URL+invalid content rejected as expected ✅"
+        if: steps.urltest.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "URL fetch + sanitiser rejection validated ✅"
+
+  ### Failure: malformed whitelist contents (shell metacharacters) ###
+  test-rejects-bad-input:
+    name: "Rejects shell metacharacters"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Stage malicious whitelist file"
+        id: stage
+        shell: bash
+        run: |
+          # Stage malicious whitelist file
+          set -euo pipefail
+          wl_file="${RUNNER_TEMP}/bad-whitelist.txt"
+          # Contains a token with a backtick / command substitution payload.
+          # The single-quoted payload below is intentionally literal; the
+          # whole point of this test is to confirm the sanitiser rejects
+          # it instead of letting the shell expand the backticks.
+          # shellcheck disable=SC2016
+          printf '%s\n' 'github.com:443 evil.com:443;`whoami`' > "$wl_file"
+          echo "wl_file=$wl_file" >> "$GITHUB_OUTPUT"
+
+      - name: "Running local action with bad input"
+        id: bad
+        uses: ./
         continue-on-error: true
         with:
-          invalid_input: "Some garbage"
+          path: ${{ steps.stage.outputs.wl_file }}
 
-      # Failure testing is also important
-      - name: "Error if step above did NOT fail"
-        if: steps.failure.outcome == 'success'
+      - name: "Error if bad input was accepted"
+        if: steps.bad.outcome == 'success'
         shell: bash
         run: |
-          # Error if step above did NOT fail
-          echo "Error: previous test step did NOT fail ❌"
+          # Error if bad input was accepted
+          echo "Error: sanitiser accepted shell metacharacters ❌"
           exit 1
+
+      - name: "Sanitiser rejected bad input as expected ✅"
+        if: steps.bad.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Sanitiser correctly rejected metacharacters ✅"
+
+  ### Failure: missing file ###
+  test-rejects-missing-file:
+    name: "Rejects missing file"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Running local action with missing file"
+        id: missing
+        uses: ./
+        continue-on-error: true
+        with:
+          path: "/tmp/does-not-exist-9f3a2b.txt"
+
+      - name: "Error if missing file was accepted"
+        if: steps.missing.outcome == 'success'
+        shell: bash
+        run: |
+          # Error if missing file was accepted
+          echo "Error: missing file did not cause failure ❌"
+          exit 1
+
+      - name: "Missing file rejected as expected ✅"
+        if: steps.missing.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Missing file correctly rejected ✅"

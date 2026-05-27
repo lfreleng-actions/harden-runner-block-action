@@ -2,36 +2,251 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+# harden-runner-block-action
+name: "🛡️ Harden Runner: Block with Whitelist"
+description: >
+  Loads an allowed-endpoints connection whitelist from a local file or remote
+  URL (with sensible defaults), sanitises it, and publishes it as an
+  environment variable for a subsequent step-security/harden-runner step to
+  consume in 'block' egress mode.
+
+# Notes:
+#   - A local file path (input: path) always takes precedence over both the
+#     'url' and 'org' inputs.
+#   - When 'path' is empty and 'url' is empty, the default URL is constructed
+#     from the resolved org as:
+#       https://raw.githubusercontent.com/<ORG>/.github/HEAD/\
+#         .github/harden-runner/<ORG>/allow_list.txt
+#   - Whitelist content is sanitised to a strict allow-list character set
+#     before being exported, to avoid passing shell metacharacters / injection
+#     vectors through the workflow environment.
+#   - This action does NOT invoke step-security/harden-runner itself.
+#     Composite actions in GitHub Actions cannot trigger the pre/post
+#     lifecycle hooks of nested actions, and harden-runner's enforcement
+#     relies on its pre hook to install the network-monitoring agent. The
+#     calling workflow MUST invoke step-security/harden-runner directly
+#     (as a sibling step in the same job) and pass the published env var
+#     as 'allowed-endpoints'. See the README for a complete example.
 
 inputs:
-  input:
-    description: "Description of input"
-    required: true
+  path:
+    description: >
+      Local filesystem path to a whitelist file. When supplied, the 'url' and
+      'org' inputs are ignored. The file must contain a list of host:port
+      entries separated by whitespace (single or multi-line accepted).
+    required: false
+    default: ""
+  url:
+    description: >
+      Remote URL from which to download the whitelist file. Ignored when
+      'path' is supplied. When neither 'path' nor 'url' is provided, a
+      default URL is constructed using the 'org' input.
+    required: false
+    default: ""
+  org:
+    description: >
+      GitHub organisation/owner used to construct the default whitelist URL.
+      When omitted, defaults at runtime to the current repository owner
+      (github.repository_owner). Ignored when 'path' is set or 'url' is
+      supplied explicitly.
+    required: false
+    default: ""
+  env_var_name:
+    description: >
+      Name of the environment variable to publish to subsequent steps. Must
+      match ^[A-Z_][A-Z0-9_]*$ (uppercase letters, digits, underscores;
+      cannot start with a digit). The default matches the existing org
+      variable naming convention.
+    required: false
+    default: "CONNECTION_WHITELIST"
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  allowed_endpoints:
+    description: >
+      The sanitised, space-separated allowed-endpoints whitelist string.
+    value: ${{ steps.sanitise.outputs.allowed_endpoints }}
+  source:
+    description: >
+      The source from which the whitelist was loaded: 'path', 'url' or
+      'default-url'.
+    value: ${{ steps.resolve.outputs.source }}
+  resolved_url:
+    description: >
+      When the whitelist was fetched from a URL, the URL that was used.
+    value: ${{ steps.resolve.outputs.resolved_url }}
 
 runs:
   using: "composite"
   steps:
-    - name: "Friendly Name"
-      id: code
+    # Step 1: Decide where the whitelist will come from.
+    - name: "Resolve whitelist source"
+      id: resolve
       shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_ORG: ${{ inputs.org }}
+        REPO_OWNER: ${{ github.repository_owner }}
       run: |
-        # Friendly Name
-        input="${{ inputs.input }}"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
+        # Resolve whitelist source
+        set -euo pipefail
+
+        in_path="${INPUT_PATH:-}"
+        in_url="${INPUT_URL:-}"
+        in_org="${INPUT_ORG:-}"
+
+        # Reject newlines in path/url inputs. Newlines here would break
+        # the simple KEY=VALUE form used by $GITHUB_OUTPUT below and
+        # could be abused to inject additional workflow outputs.
+        for var_name in INPUT_PATH INPUT_URL; do
+          eval "val=\${$var_name:-}"
+          case "$val" in
+            *$'\n'*|*$'\r'*)
+              echo "Error: '$var_name' contains a newline character ❌"
+              exit 1
+              ;;
+          esac
+        done
+
+        # Local file path takes precedence over everything else.
+        if [ -n "$in_path" ]; then
+          echo "source=path" >> "$GITHUB_OUTPUT"
+          echo "resolved_path=$in_path" >> "$GITHUB_OUTPUT"
+          echo "resolved_url=" >> "$GITHUB_OUTPUT"
+          echo "Source: local path -> $in_path ✅"
+          exit 0
+        fi
+
+        # No path: we will need to download from a URL.
+        if [ -n "$in_url" ]; then
+          resolved_url="$in_url"
+          src="url"
+        else
+          org="${in_org:-$REPO_OWNER}"
+          # Validate org: GitHub login chars are [A-Za-z0-9-].
+          org_re='^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+          if ! printf '%s' "$org" | grep -Eq "$org_re"; then
+            echo "Error: resolved org name is invalid: '$org' ❌"
+            exit 1
+          fi
+          resolved_url="https://raw.githubusercontent.com/${org}/.github/HEAD/.github/harden-runner/${org}/allow_list.txt"
+          src="default-url"
+          echo "org=$org" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "source=$src" >> "$GITHUB_OUTPUT"
+        echo "resolved_url=$resolved_url" >> "$GITHUB_OUTPUT"
+        # Where the URL download step should write the file. We use mktemp
+        # so that two concurrent invocations on the same runner never share
+        # a file, and so that the path is unguessable. The file is removed
+        # again by the cleanup step at the end of this action.
+        tmpdir="${RUNNER_TEMP:-/tmp}"
+        download_path=$(mktemp "${tmpdir}/harden-runner-whitelist.XXXXXXXX.txt")
+        echo "resolved_path=$download_path" >> "$GITHUB_OUTPUT"
+        echo "Source: $src -> $resolved_url ✅"
+
+    # Step 2: Fetch via lfreleng-actions/url-download-action when needed.
+    - name: "Download whitelist from URL"
+      if: steps.resolve.outputs.source != 'path'
+      # yamllint disable-line rule:line-length
+      uses: lfreleng-actions/url-download-action@fea05e25548bffe5c238e669f534ef33de1f827d  # v0.1.4
+      with:
+        url: ${{ steps.resolve.outputs.resolved_url }}
+        path: ${{ steps.resolve.outputs.resolved_path }}
+        exit_on_fail: "true"
+
+    # Step 3: Read, sanitise, validate, and publish the whitelist.
+    - name: "Sanitise whitelist content"
+      id: sanitise
+      shell: bash
+      env:
+        WHITELIST_FILE: ${{ steps.resolve.outputs.resolved_path }}
+        ENV_VAR_NAME: ${{ inputs.env_var_name }}
+      run: |
+        # Sanitise whitelist content
+        set -euo pipefail
+
+        if [ ! -f "$WHITELIST_FILE" ]; then
+          echo "Error: whitelist file not found at: $WHITELIST_FILE ❌"
           exit 1
         fi
 
-        echo "output=$input" >> "$GITHUB_ENV"
-        echo "output=$input" >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+        # Validate the requested env var name: uppercase letters,
+        # digits, and underscores. POSIX-style; cannot start with a
+        # digit. Matches the comment above and the README/input docs.
+        env_re='^[A-Z_][A-Z0-9_]*$'
+        if ! printf '%s' "$ENV_VAR_NAME" | grep -Eq "$env_re"; then
+          echo "Error: invalid env_var_name '$ENV_VAR_NAME' ❌"
+          echo "Must match ${env_re}."
+          exit 1
+        fi
+
+        # Read file. Strip a leading UTF-8 BOM if present, strip comment
+        # lines (starting with '#'), collapse all whitespace (including
+        # newlines and tabs) into single spaces, and trim.
+        raw=$(sed '1s/^\xEF\xBB\xBF//' "$WHITELIST_FILE" \
+              | sed -E 's/(^|[[:space:]])#.*$//' \
+              | tr '\n\r\t' '   ' \
+              | tr -s ' ' \
+              | sed -E 's/^ +//; s/ +$//')
+
+        if [ -z "$raw" ]; then
+          echo "Error: whitelist file is empty after parsing ❌"
+          exit 1
+        fi
+
+        # Validate every whitespace-separated token against a strict
+        # allow-list. Each token must look like a host (or wildcard host)
+        # optionally followed by ':<port>'. Allowed host characters are
+        # letters, digits, dot, hyphen, and asterisk for subdomain
+        # wildcarding (e.g. '*.githubusercontent.com'). Ports must be
+        # numeric, 1-5 digits.
+        token_re='^[A-Za-z0-9*][A-Za-z0-9.*-]*(:[0-9]{1,5})?$'
+        sanitised=""
+        for token in $raw; do
+          if ! printf '%s' "$token" | grep -Eq "$token_re"; then
+            echo "Error: rejected whitelist token '$token' ❌"
+            echo "Only host[:port] entries with [A-Za-z0-9.*-] are accepted."
+            exit 1
+          fi
+          if [ -z "$sanitised" ]; then
+            sanitised="$token"
+          else
+            sanitised="$sanitised $token"
+          fi
+        done
+
+        # Publish to subsequent steps via GITHUB_ENV (single-line value, so
+        # the simple KEY=VALUE form is safe), and as a step output.
+        echo "${ENV_VAR_NAME}=${sanitised}" >> "$GITHUB_ENV"
+        echo "allowed_endpoints=${sanitised}" >> "$GITHUB_OUTPUT"
+
+        # Counts in step summary; do not echo the full list to logs to
+        # keep noise down (it can be long).
+        count=$(printf '%s\n' "$sanitised" | wc -w | tr -d ' ')
+        echo "Loaded ${count} whitelist endpoints ✅"
+        {
+          echo "### 🛡️ Harden Runner Whitelist"
+          echo ""
+          echo "- Endpoints loaded: **${count}**"
+          echo "- Published as env var: \`${ENV_VAR_NAME}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # Step 4: Remove the downloaded whitelist file from the runner. We only
+    # delete files we created via mktemp (i.e. when the source was a URL);
+    # a user-supplied local 'path' is left untouched. 'always()' ensures the
+    # cleanup runs even if a later step fails. The sanitised whitelist value
+    # has already been published to the environment and outputs above, so
+    # the on-disk copy is no longer needed.
+    - name: "Cleanup downloaded whitelist"
+      if: always() && steps.resolve.outputs.source != 'path'
+      shell: bash
+      env:
+        DOWNLOAD_PATH: ${{ steps.resolve.outputs.resolved_path }}
+      run: |
+        # Cleanup downloaded whitelist
+        set -euo pipefail
+        if [ -n "${DOWNLOAD_PATH:-}" ] && [ -f "$DOWNLOAD_PATH" ]; then
+          rm -f -- "$DOWNLOAD_PATH"
+          echo "Removed temporary whitelist file ✅"
+        fi
