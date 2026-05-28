@@ -2,36 +2,82 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+name: "🛡️ Harden Runner: Block-mode Allow-list Loader"
+description: >
+  Loads an allowed-endpoints egress allow-list from a local file or
+  remote URL (with sensible defaults), sanitises it, and publishes it
+  as an environment variable that a subsequent step-security/harden-runner
+  step can consume in 'block' egress mode.
+
+# Notes:
+#   - A local file path (input: allow_list_path) always takes precedence
+#     over both the 'url' and 'org' inputs.
+#   - When 'allow_list_path' is empty and 'url' is empty, the action
+#     constructs the default URL from the resolved org as:
+#       https://raw.githubusercontent.com/<ORG>/.github/HEAD/\
+#         .github/harden-runner/<ORG>/allow_list.txt
+#   - The action sanitises allow-list content against a strict allow-list
+#     character set before exporting, to avoid passing shell metacharacters
+#     / injection vectors through the workflow environment.
+#   - The action's loading work happens in the 'pre:' lifecycle hook so
+#     that the published env var (default CONNECTION_ALLOW_LIST) exists
+#     before any later action's pre hook runs. That ordering is the
+#     reason this is a Node.js action with a pre hook rather than a
+#     composite action: step-security/harden-runner's own pre hook
+#     reads allowed-endpoints and configures the network filter before
+#     any main step executes.
 
 inputs:
-  input:
-    description: "Description of input"
-    required: true
+  allow_list_path:
+    description: >
+      Local filesystem path to an allow-list file. When supplied, the
+      action ignores the 'url' and 'org' inputs. The file must contain
+      a list of host[:port] entries separated by whitespace (single
+      or multi-line accepted; '#' introduces a comment, either as a
+      full-line comment or trailing on a line). Must not contain
+      newline characters in the path string itself.
+    required: false
+    default: ""
+  url:
+    description: >
+      Remote URL from which to download the allow-list file. Ignored
+      when 'allow_list_path' is supplied. When neither
+      'allow_list_path' nor 'url' is provided, the action constructs
+      a default URL using the 'org' input. Must not contain newline
+      characters.
+    required: false
+    default: ""
+  org:
+    description: >
+      GitHub organisation/owner used to construct the default
+      allow-list URL. When omitted, defaults at runtime to the current
+      repository owner (github.repository_owner). Ignored when
+      'allow_list_path' is set or 'url' is supplied explicitly.
+    required: false
+    default: ""
+  env_var_name:
+    description: >
+      Name of the environment variable to publish to subsequent steps.
+      Must match ^[A-Z_][A-Z0-9_]*$ (uppercase letters, digits,
+      underscores; cannot start with a digit).
+    required: false
+    default: "CONNECTION_ALLOW_LIST"
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  allowed_endpoints:
+    description: >
+      The sanitised, space-separated allowed-endpoints allow-list
+      string.
+  source:
+    description: >
+      The source from which the action loaded the allow-list: 'path',
+      'url' or 'default-url'.
+  resolved_url:
+    description: >
+      When the action fetched the allow-list from a URL, the URL that
+      it used. Empty when the source was a local 'path'.
 
 runs:
-  using: "composite"
-  steps:
-    - name: "Friendly Name"
-      id: code
-      shell: bash
-      run: |
-        # Friendly Name
-        input="${{ inputs.input }}"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
-          exit 1
-        fi
-
-        echo "output=$input" >> "$GITHUB_ENV"
-        echo "output=$input" >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+  using: "node20"
+  pre: "src/pre.mjs"
+  main: "src/main.mjs"
