@@ -298,7 +298,7 @@ files.pythonhosted.org:443
 
 ## Implementation details
 
-The action is a Node.js (`node20`) action with a `pre:` hook and a
+The action is a Node.js (`node24`) action with a `pre:` hook and a
 near-empty `main:` hook:
 
 1. **`pre:` (src/pre.mjs)** does all the real work, in the pre

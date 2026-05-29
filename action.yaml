@@ -120,6 +120,6 @@ outputs:
       explicit (config mode).
 
 runs:
-  using: "node20"
+  using: "node24"
   pre: "src/pre.mjs"
   main: "src/main.mjs"
