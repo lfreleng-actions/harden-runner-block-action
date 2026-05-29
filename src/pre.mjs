@@ -25,6 +25,9 @@ import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import * as https from 'node:https';
 import { URL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
 
 // Hard limit on how many bytes the HTTPS fetcher will buffer in
 // memory from a remote response. The canonical allow-list at
@@ -142,7 +145,23 @@ function getInput(name, defaultValue = "") {
 const inputPath = getInput('allow_list_path');
 const inputUrl = getInput('url');
 const inputOrg = getInput('org');
+const inputConfig = getInput('config');
+const inputToken = getInput('token');
+const inputAllowListSummary = getInput('allow_list_summary', 'true');
 const envVarName = getInput('env_var_name', 'CONNECTION_ALLOW_LIST');
+
+// 'config' is mutually exclusive with the legacy source inputs.
+if (inputConfig !== '') {
+  if (inputPath !== '' || inputUrl !== '' || inputOrg !== '') {
+    fail(
+      "Input 'config' is mutually exclusive with 'allow_list_path', " +
+      "'url' and 'org'; specify only one mechanism ❌",
+    );
+  }
+  if (/[\r\n]/.test(inputConfig)) {
+    fail("Input 'config' must not contain newline characters ❌");
+  }
+}
 
 // Reject newlines in allow_list_path/url inputs. Newlines would let
 // a caller inject additional outputs/env entries via $GITHUB_ENV /
@@ -173,7 +192,11 @@ let resolvedUrl = '';
 let displayUrl = ''; // resolvedUrl with credentials/query/fragment stripped
 let inputFilePath = ''; // only set when source === 'path'
 
-if (inputPath !== '') {
+if (inputConfig !== '') {
+  // Config mode is handled entirely in the async IIFE below via the
+  // shared Python resolver; skip the legacy source resolution.
+  source = 'config';
+} else if (inputPath !== '') {
   source = 'path';
   inputFilePath = inputPath;
   info(`Source: local allow_list_path -> ${inputPath} ✅`);
@@ -386,10 +409,101 @@ function sanitise(raw) {
 }
 
 // ---------------------------------------------------------------------
+// Config-mode resolution (shared Python resolver)
+// ---------------------------------------------------------------------
+
+function runConfigFlow() {
+  // Mask the token before anything else so it cannot leak into logs.
+  // Escape the value so a token containing %, CR or LF cannot break
+  // the ::add-mask:: command or inject additional workflow commands.
+  if (inputToken) {
+    console.log(`::add-mask::${escapeWorkflowCommand(inputToken)}`);
+  }
+
+  // Preflight: the shared resolver needs python3 on the runner.
+  const probe = spawnSync('python3', ['--version'], { encoding: 'utf8' });
+  if (probe.status !== 0) {
+    fail("python3 is required for the 'config' input but was not found ❌");
+  }
+
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const script = path.join(here, 'resolve_config_source.py');
+
+  // An empty --step-summary target suppresses the summary block
+  // (e.g. matrix legs other than the first).
+  const summaryTarget = inputAllowListSummary === 'false'
+    ? ''
+    : (process.env.GITHUB_STEP_SUMMARY || '');
+
+  // The token is passed via the environment (CONFIG_TOKEN), never on
+  // the command line, so it cannot appear in a process listing. We
+  // also strip the runner-provided INPUT_TOKEN from the child
+  // environment: the resolver reads (and pops) CONFIG_TOKEN, so
+  // leaving INPUT_TOKEN in place would still leak the secret into the
+  // git subprocesses the resolver spawns.
+  const childEnv = { ...process.env, CONFIG_TOKEN: inputToken };
+  delete childEnv.INPUT_TOKEN;
+  const res = spawnSync('python3', [
+    script,
+    '--config', inputConfig,
+    '--workflow-org', repoOwner,
+    '--family', 'harden-runner',
+    '--mode', 'endpoints',
+    '--token-env', 'CONFIG_TOKEN',
+    '--content-key', 'allowed_endpoints',
+    '--summary-title', '🛡️ Harden Runner Allow-list',
+    '--summary-unit', 'Endpoints',
+    '--github-output', process.env.GITHUB_OUTPUT || '',
+    '--step-summary', summaryTarget,
+    '--json-stdout',
+  ], {
+    encoding: 'utf8',
+    env: childEnv,
+    // The resolver allows allow-list files up to 1 MiB and serialises
+    // the token list as JSON on stdout; raise maxBuffer well above
+    // Node's 1 MiB default so a near-limit file cannot trigger
+    // ENOBUFS before the env var is exported.
+    maxBuffer: 16 * 1024 * 1024,
+  });
+
+  if (res.stderr) {
+    process.stderr.write(res.stderr);
+  }
+  if (res.status !== 0) {
+    fail(`Failed to resolve allow-list from config '${inputConfig}' ❌`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(res.stdout.trim());
+  } catch (e) {
+    fail(`Could not parse config resolver output ❌`);
+  }
+
+  if (!data.found) {
+    // Unlike python-audit-action, an empty allow-list is fatal here:
+    // harden-runner block mode with no endpoints breaks all egress.
+    fail(`No allow-list found via config '${inputConfig}' ❌`);
+  }
+
+  const sanitised = data.tokens.join(' ');
+  // The resolver already wrote the step outputs and summary; we only
+  // need to publish the env var the downstream harden-runner pre hook
+  // consumes.
+  exportEnv(envVarName, sanitised);
+  info(`Loaded ${data.count} allow-list endpoints via config ✅`);
+}
+
+// ---------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------
 
 (async () => {
+  if (inputConfig !== '') {
+    runConfigFlow();
+    return;
+  }
+
   const raw = await loadContent();
   const sanitised = sanitise(raw);
 
@@ -405,16 +519,18 @@ function sanitise(raw) {
 
   const count = sanitised.split(' ').filter(Boolean).length;
   info(`Loaded ${count} allow-list endpoints ✅`);
-  stepSummary(
-    [
-      "### 🛡️ Harden Runner Allow-list",
-      "",
-      `- Source: \`${source}\`${displayUrl ? `  (\`${displayUrl}\`)` : ''}`,
-      `- Endpoints loaded: **${count}**`,
-      `- Published as env var: \`${envVarName}\``,
-      "",
-    ].join('\n')
-  );
+  if (inputAllowListSummary !== 'false') {
+    stepSummary(
+      [
+        "### 🛡️ Harden Runner Allow-list",
+        "",
+        `- Source: \`${source}\`${displayUrl ? `  (\`${displayUrl}\`)` : ''}`,
+        `- Endpoints loaded: **${count}**`,
+        `- Published as env var: \`${envVarName}\``,
+        "",
+      ].join('\n')
+    );
+  }
 })().catch((e) => {
   fail(`Unexpected error in pre step: ${e.stack || e.message || e} ❌`);
 });

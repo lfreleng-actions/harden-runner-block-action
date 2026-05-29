@@ -1,0 +1,68 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Runs the shared config-resolver unit tests (pytest).
+#
+# The action's main code path is exercised via node (see
+# testing.yaml), but the shared src/resolve_config_source.py module
+# carries its own pytest suite that pins the `config` grammar and the
+# mode-selected sanitisers. Without this job those tests would never
+# run in CI and regressions could merge unnoticed.
+
+name: 'Resolver tests 🧪'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    paths:
+      - 'src/resolve_config_source.py'
+      - 'tests/test_resolve_config_source.py'
+      - '.github/workflows/resolver-tests.yaml'
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'src/resolve_config_source.py'
+      - 'tests/test_resolve_config_source.py'
+      - '.github/workflows/resolver-tests.yaml'
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  pytest:
+    name: 'Run resolver unit tests'
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: 'Setup Python'
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: 'Run resolver unit tests'
+        shell: bash
+        run: |
+          # Stdlib-only module; pytest is the sole test dependency.
+          python -m pip install --disable-pip-version-check -q pytest
+          python -m pytest tests/test_resolve_config_source.py -q

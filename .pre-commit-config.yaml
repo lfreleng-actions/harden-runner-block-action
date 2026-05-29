@@ -55,15 +55,18 @@ repos:
     rev: 0c7b6c989466a93942def1f84baf36ddfcd60c83  # frozen: v0.15.14
     hooks:
       - id: ruff
-        files: ^(scripts|tests|custom_components)/.+\.py$
+        files: ^(src|scripts|tests|custom_components)/.+\.py$
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
-        files: ^(scripts|tests|custom_components)/.+\.py$
+        files: ^(src|scripts|tests|custom_components)/.+\.py$
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: d2823d321df3af8f878f7ee3414dc94d037145b9  # frozen: v2.1.0
     hooks:
       - id: mypy
+        # The resolver test module imports pytest; make it available in
+        # the hook's isolated environment so mypy can resolve the import.
+        additional_dependencies: ["pytest"]
 
   - repo: https://github.com/btford/write-good
     rev: ab66ce10136dfad5146e69e70f82a3efac8842c1 # frozen: v1.0.8

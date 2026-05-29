@@ -184,6 +184,117 @@ jobs:
           fi
           echo "Happy-path default-URL assertions passed ($count endpoints) ✅"
 
+  ### Config mode (Node→Python integration). Asserts that pre.mjs
+  ### invokes the shared resolver, fetches the live allow-list via
+  ### git, publishes the env var, and emits the resolved_* outputs
+  ### (notably the peeled commit resolved_sha).
+  test-config-mode:
+    name: "Config mode: git fetch"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs in config mode"
+        shell: bash
+        env:
+          # Pinned to an immutable commit SHA so the assertions below
+          # do not depend on the mutable contents of
+          # lfreleng-actions/.github@main.
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@9e51be0a6ca2c2ce11d418e87b4a425d86a329fa"
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+          GITHUB_REPOSITORY_OWNER: "lfreleng-actions"
+        run: |
+          # Run pre.mjs in config mode (exercises the Python resolver)
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/cfg_env"
+          captured_out="${RUNNER_TEMP}/cfg_out"
+          captured_sum="${RUNNER_TEMP}/cfg_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          if ! grep -q '^source=config$' "$captured_out"; then
+            echo "Error: source output != config ❌"
+            cat "$captured_out"
+            exit 1
+          fi
+          if ! grep -q '^found=true$' "$captured_out"; then
+            echo "Error: found output != true ❌"
+            exit 1
+          fi
+          # resolved_sha must be a 40-char commit SHA (peeled, not a
+          # tag object): proves the Node→Python wiring populated it.
+          if ! grep -Eq '^resolved_sha=[0-9a-f]{40}$' "$captured_out"; then
+            echo "Error: resolved_sha not a 40-char commit SHA ❌"
+            cat "$captured_out"
+            exit 1
+          fi
+          # Declared outputs must use the resolved_* names.
+          for key in resolved_host_org resolved_repo resolved_ref; do
+            if ! grep -q "^${key}=" "$captured_out"; then
+              echo "Error: missing output ${key} ❌"
+              exit 1
+            fi
+          done
+          count=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//' | wc -w | tr -d ' ')
+          if [ "$count" -lt 10 ]; then
+            echo "Error: expected >=10 endpoints, got $count ❌"
+            exit 1
+          fi
+          echo "Config-mode assertions passed ($count endpoints) ✅"
+
+  ### Config mutual-exclusion. Asserts that combining 'config' with a
+  ### legacy source input (org) fails fast with a clear error, so the
+  ### precedence rule cannot silently regress.
+  test-config-exclusivity:
+    name: "Config mode: mutual exclusion"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Run pre.mjs with config + org (must fail)"
+        shell: bash
+        env:
+          INPUT_CONFIG: "lfreleng-actions@main"
+          INPUT_ORG: "lfreleng-actions"
+          GITHUB_REPOSITORY_OWNER: "lfreleng-actions"
+        run: |
+          # config combined with a legacy source input must error
+          set -uo pipefail
+          captured_env="${RUNNER_TEMP}/exc_env"
+          captured_out="${RUNNER_TEMP}/exc_out"
+          : > "$captured_env" ; : > "$captured_out"
+          set +e
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+            node src/pre.mjs 2> "${RUNNER_TEMP}/exc_err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: expected non-zero exit for config+org ❌"
+            exit 1
+          fi
+          if ! grep -q 'mutually exclusive' "${RUNNER_TEMP}/exc_err"; then
+            echo "Error: missing mutual-exclusion error message ❌"
+            cat "${RUNNER_TEMP}/exc_err"
+            exit 1
+          fi
+          echo "Config mutual-exclusion assertion passed (exit ${rc}) ✅"
+
   ### Custom env var name. Asserts that pre.mjs publishes to the
   ### requested env var and NOT to the default name.
   test-custom-env-var:
