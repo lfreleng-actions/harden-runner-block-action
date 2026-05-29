@@ -1,0 +1,94 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Verifies the shared config resolver stays byte-identical with the
+# sibling repository.
+#
+# src/resolve_config_source.py and tests/test_resolve_config_source.py
+# are mirrored, byte-for-byte, across:
+#   - lfreleng-actions/harden-runner-block-action
+#   - lfreleng-actions/python-audit-action
+#
+# This job compares this repository's copies against the sibling repo's
+# default branch and fails on any drift. It runs after merge (push to
+# main), on a weekly schedule, and on demand — deliberately NOT as a
+# required pull-request check, so a coordinated pair of PRs (which
+# briefly makes the two default branches differ until the second one
+# merges) does not deadlock. A red main after the first merge is the
+# intended signal to land the paired PR in the sibling repo.
+
+name: 'Sync shared resolver 🔁'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+  push:
+    branches: ['main']
+    paths:
+      - 'src/resolve_config_source.py'
+      - 'tests/test_resolve_config_source.py'
+      - '.github/workflows/sync-shared-resolver.yaml'
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  verify-sync:
+    name: 'Verify shared resolver matches sibling repo'
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    env:
+      # The sibling repository that mirrors the shared resolver.
+      SIBLING_REPO: 'lfreleng-actions/python-audit-action'
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: "Diff shared files against ${{ env.SIBLING_REPO }}"
+        shell: bash
+        run: |
+          # Compare each shared file against the sibling repo's default
+          # branch (HEAD). Any difference fails the job.
+          set -euo pipefail
+          fail=0
+          files=(
+            'src/resolve_config_source.py'
+            'tests/test_resolve_config_source.py'
+          )
+          for f in "${files[@]}"; do
+            url="https://raw.githubusercontent.com/${SIBLING_REPO}/HEAD/${f}"
+            echo "Fetching ${url}"
+            if ! curl --proto '=https' --tlsv1.2 \
+              -sSfL --max-time 30 -o sibling.tmp "$url"; then
+              echo "::error::Could not fetch ${f} from ${SIBLING_REPO}"
+              fail=1
+              continue
+            fi
+            if diff -u "$f" sibling.tmp; then
+              echo "${f} matches ${SIBLING_REPO} ✅"
+            else
+              echo "::error::${f} differs from ${SIBLING_REPO};" \
+                   "the shared resolver must stay byte-identical." \
+                   "Raise paired PRs in both repositories."
+              fail=1
+            fi
+            rm -f sibling.tmp
+          done
+          exit "$fail"
