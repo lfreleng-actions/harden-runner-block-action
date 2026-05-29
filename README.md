@@ -124,17 +124,17 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                | Description                                                                       |
-| ------------------- | --------------------------------------------------------------------------------- |
-| `allowed_endpoints` | The sanitised, space-separated allowed-endpoints allow-list string.               |
-| `source`            | One of `path`, `url`, `default-url`, `config`.                                    |
-| `resolved_url`      | The URL the action used when fetching remotely. Empty when source was `path`.     |
-| `resolved_host_org` | Host org that supplied the allow-list (`config` mode).                            |
-| `resolved_repo`     | Repository that supplied the allow-list (`config` mode).                          |
-| `resolved_ref`      | Git ref requested for the `config` fetch.                                         |
-| `resolved_sha`      | Exact commit SHA the `config` ref resolved to.                                    |
-| `resolved_path`     | In-repo path of the matched `config` file.                                        |
-| `matched_candidate` | Search candidate that matched: `org-specific`, `family-default` or `explicit`.    |
+| Name                | Description                                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_endpoints` | The sanitised, space-separated allowed-endpoints allow-list string.                                                                          |
+| `source`            | One of `path`, `url`, `default-url`, `config`.                                                                                               |
+| `resolved_url`      | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead). |
+| `resolved_host_org` | Host org that supplied the allow-list (`config` mode).                                                                                       |
+| `resolved_repo`     | Repository that supplied the allow-list (`config` mode).                                                                                     |
+| `resolved_ref`      | Git ref requested for the `config` fetch.                                                                                                    |
+| `resolved_sha`      | Exact commit SHA the `config` ref resolved to.                                                                                               |
+| `resolved_path`     | In-repo path of the matched `config` file.                                                                                                   |
+| `matched_candidate` | Search candidate that matched: `org-specific`, `family-default` or `explicit`.                                                               |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -155,9 +155,9 @@ allow-list to an immutable commit, much like an action pin.
 
 ```yaml
 steps:
-  - uses: lfreleng-actions/harden-runner-block-action@v0.1.0
+  - uses: lfreleng-actions/harden-runner-block-action@main
     with:
-      config: 'lfreleng-actions@v0.1.0'
+      config: 'lfreleng-actions@main'
 
   - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
     with:
@@ -196,8 +196,10 @@ Defaults applied to anything you omit:
     default directory search.
   - **contains a `/`** — an explicit in-repo path; the action skips
     the search and that exact path must exist.
-- One or more spaces then `#` starts a trailing comment, which the
-  parser drops (`#`, `#`, `\t#` all work).
+- A `#` preceded by at least one space or tab starts a trailing
+  comment; the parser drops everything from that `#` to end of line.
+  A `#` with no preceding whitespace forms part of a token
+  (so `foo#bar` is a single token, not a comment).
 - The output `resolved_sha` always reports the commit the ref
   resolved to, even when you pin a branch or tag.
 
@@ -246,11 +248,11 @@ current repository alone, so pass a PAT or GitHub App token here:
 
 > [!NOTE]
 > `config` resolution uses the runner's preinstalled `python3` (the
-> resolver needs no third-party packages). GitHub-hosted runners
-> ship it; on self-hosted runners `python3` must sit on `PATH`. Both
-> repositories mirror the shared parser
-> `src/resolve_config_source.py`, and changes must land as paired
-> pull requests across `harden-runner-block-action` and
+> resolver needs no third-party packages) and shells out to `git` for
+> the fetch. GitHub-hosted runners ship both; on self-hosted runners
+> `python3` and `git` must sit on `PATH`. Both repositories mirror the
+> shared parser `src/resolve_config_source.py`, and changes must land
+> as paired pull requests across `harden-runner-block-action` and
 > `python-audit-action`.
 
 ### Suppressing the step summary on matrix jobs
@@ -262,7 +264,7 @@ matrix context itself, but the calling workflow can. Set
 
 ```yaml
     with:
-      config: 'lfreleng-actions@v0.1.0'
+      config: 'lfreleng-actions@main'
       # Emit the allow-list summary from the first matrix leg.
       allow_list_summary: ${{ strategy.job-index == 0 }}
 ```

@@ -13,9 +13,10 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 #
 # Unit tests for resolve_config_source: parsing, resolution defaults,
-# the search-candidate chain, and the mode-selected sanitisers. These
-# tests do not touch the network; fetch_file() is exercised separately
-# by an integration smoke test in CI.
+# the search-candidate chain, the mode-selected sanitisers, and
+# fetch_file() (with git interactions stubbed via _run_git, so the
+# tests never touch the network). The resolver-tests.yaml workflow runs
+# this file.
 
 # pyright: basic, reportMissingImports=false
 
@@ -160,6 +161,19 @@ def test_newline_in_config_rejected():
         _resolve("lfit@main\nevil")
 
 
+def test_newline_disguised_as_comment_rejected():
+    # A newline before '#' must NOT be treated as a comment separator,
+    # otherwise the trailing line would slip past newline rejection.
+    with pytest.raises(rcs.ResolveError):
+        _resolve("lfit@main\n# hidden")
+
+
+def test_split_comment_ignores_newline_separator():
+    spec, comment = rcs.split_comment("lfit@main\n# hidden")
+    assert spec == "lfit@main\n# hidden"
+    assert comment == ""
+
+
 # ---------------------------------------------------------------------
 # Sanitisers
 # ---------------------------------------------------------------------
@@ -217,3 +231,180 @@ def test_sanitise_empty_after_comments_raises():
 def test_unknown_mode_raises():
     with pytest.raises(rcs.ResolveError):
         rcs.sanitise("github.com", "bogus")
+
+
+# ---------------------------------------------------------------------
+# fetch_file (git interactions stubbed via _run_git)
+# ---------------------------------------------------------------------
+
+import subprocess  # noqa: E402
+
+_FAKE_SHA = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+
+def _install_fake_git(
+    monkeypatch, *, fetch_rc=0, sha=_FAKE_SHA, files=None, sizes=None, trees=None
+):
+    """Stub rcs._run_git so fetch_file() runs without touching git/network.
+
+    files maps an in-repo path to its content; sizes optionally overrides
+    the reported blob size; trees is a set of paths reported as 'tree'
+    objects (directories). Returns the list of git argument vectors
+    (with the leading '-C <tmp>' stripped) for assertions.
+    """
+    files = files or {}
+    sizes = sizes or {}
+    trees = set(trees or [])
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, timeout):
+        sub = list(args[2:])  # strip the leading ['-C', tmp]
+        calls.append(sub)
+
+        def cp(rc, out=""):
+            return subprocess.CompletedProcess(args, rc, out, "")
+
+        if sub[:1] == ["init"]:
+            return cp(0)
+        if sub[:2] == ["remote", "add"]:
+            return cp(0)
+        if "fetch" in sub:
+            return cp(fetch_rc)
+        if sub[:1] == ["rev-parse"]:
+            return cp(0, sha + "\n")
+        if sub[:2] == ["cat-file", "-t"]:
+            path = sub[2].split(":", 1)[1]
+            if path in trees:
+                return cp(0, "tree\n")
+            return cp(0, "blob\n") if path in files else cp(1)
+        if sub[:2] == ["cat-file", "-s"]:
+            path = sub[2].split(":", 1)[1]
+            size = sizes.get(path, len(files.get(path, "")))
+            return cp(0, f"{size}\n")
+        if sub[:1] == ["show"]:
+            path = sub[1].split(":", 1)[1]
+            return cp(0, files[path])
+        return cp(0)
+
+    monkeypatch.setattr(rcs, "_run_git", fake_run_git)
+    return calls
+
+
+def test_fetch_file_found_first_candidate(monkeypatch):
+    cands = [
+        ".github/python-audit/onap/allow_list.txt",
+        ".github/python-audit/allow_list.txt",
+    ]
+    _install_fake_git(monkeypatch, files={cands[0]: "CVE-2024-1234\n"})
+    result = rcs.fetch_file(
+        host_org="lfit",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+    )
+    assert result["found"] is True
+    assert result["matched_path"] == cands[0]
+    assert result["resolved_sha"] == _FAKE_SHA
+    assert result["content"] == "CVE-2024-1234\n"
+
+
+def test_fetch_file_falls_back_to_second_candidate(monkeypatch):
+    cands = [
+        ".github/python-audit/onap/allow_list.txt",
+        ".github/python-audit/allow_list.txt",
+    ]
+    _install_fake_git(monkeypatch, files={cands[1]: "CVE-2024-1234\n"})
+    result = rcs.fetch_file(
+        host_org="lfit",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+    )
+    assert result["found"] is True
+    assert result["matched_path"] == cands[1]
+
+
+def test_fetch_file_not_found(monkeypatch):
+    cands = ["a/x.txt", "b/x.txt"]
+    _install_fake_git(monkeypatch, files={})
+    result = rcs.fetch_file(
+        host_org="lfit",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+    )
+    assert result["found"] is False
+    assert result["matched_path"] == ""
+    assert result["content"] is None
+    assert result["resolved_sha"] == _FAKE_SHA
+
+
+def test_fetch_file_peels_to_commit(monkeypatch):
+    cands = ["a/x.txt"]
+    calls = _install_fake_git(monkeypatch, files={"a/x.txt": "CVE-2024-1234"})
+    rcs.fetch_file(
+        host_org="lfit",
+        repo=".github",
+        ref="v1.0.0",
+        candidates=cands,
+    )
+    assert ["rev-parse", "FETCH_HEAD^{commit}"] in calls
+
+
+def test_fetch_file_fetch_failure_raises(monkeypatch):
+    _install_fake_git(monkeypatch, fetch_rc=1)
+    with pytest.raises(rcs.ResolveError):
+        rcs.fetch_file(
+            host_org="lfit",
+            repo=".github",
+            ref="main",
+            candidates=["a/x.txt"],
+        )
+
+
+def test_fetch_file_size_limit_raises(monkeypatch):
+    cands = ["a/x.txt"]
+    _install_fake_git(
+        monkeypatch,
+        files={"a/x.txt": "x"},
+        sizes={"a/x.txt": rcs.MAX_FILE_BYTES + 1},
+    )
+    with pytest.raises(rcs.ResolveError):
+        rcs.fetch_file(
+            host_org="lfit",
+            repo=".github",
+            ref="main",
+            candidates=cands,
+        )
+
+
+def test_fetch_file_skips_directory_candidate(monkeypatch):
+    # A candidate that resolves to a tree (directory) must not be read
+    # as content; the fall-through candidate (a blob) is used instead.
+    cands = ["a/dir", "b/x.txt"]
+    _install_fake_git(
+        monkeypatch,
+        files={"b/x.txt": "CVE-2024-1234\n"},
+        trees=["a/dir"],
+    )
+    result = rcs.fetch_file(
+        host_org="lfit",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+    )
+    assert result["found"] is True
+    assert result["matched_path"] == "b/x.txt"
+
+
+def test_fetch_file_directory_only_not_found(monkeypatch):
+    # When the only candidate is a directory, nothing is read.
+    cands = ["a/dir"]
+    _install_fake_git(monkeypatch, trees=["a/dir"])
+    result = rcs.fetch_file(
+        host_org="lfit",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+    )
+    assert result["found"] is False

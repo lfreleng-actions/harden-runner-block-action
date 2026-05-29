@@ -83,16 +83,23 @@ class ResolveError(Exception):
 # Parsing
 # ---------------------------------------------------------------------
 
+
 def split_comment(value: str) -> tuple[str, str]:
-    """Split a trailing ' #...' comment (one or more spaces before '#').
+    """Split a trailing ' #...' comment (one or more spaces/tabs before '#').
 
     Returns (spec, comment). The comment (without the leading whitespace
     and '#') is informational only and never affects resolution.
+
+    Only spaces and tabs are treated as the separator before '#': a
+    newline must NOT be consumed here, otherwise a value such as
+    'lfit@main\n# hidden' would be split into a bare spec plus a
+    'comment' and slip past the newline rejection in parse_config().
     """
-    # Match the first run of whitespace followed by '#', to end of string.
-    m = re.search(r"\s+#(.*)$", value)
+    # Match the first run of spaces/tabs followed by '#', to end of line.
+    m = re.search(r"[ \t]+#[^\r\n]*$", value)
     if m:
-        return value[: m.start()], m.group(1).strip()
+        comment = value[m.start() :].lstrip(" \t")[1:].strip()
+        return value[: m.start()], comment
     return value, ""
 
 
@@ -186,8 +193,14 @@ def resolve(
     # --- ref ---
     ref = parts["ref"] or "HEAD"
     if ref != "HEAD":
-        if ref.startswith("-") or ref.startswith("/") or ".." in ref \
-                or "@{" in ref or len(ref) > 255 or not REF_RE.match(ref):
+        if (
+            ref.startswith("-")
+            or ref.startswith("/")
+            or ".." in ref
+            or "@{" in ref
+            or len(ref) > 255
+            or not REF_RE.match(ref)
+        ):
             raise ResolveError(f"invalid git ref in config: '{ref}'")
 
     # --- subpath -> filename + directory + search candidates ---
@@ -246,6 +259,7 @@ def resolve(
 # Fetch (shallow, ref-pinned, git over HTTPS)
 # ---------------------------------------------------------------------
 
+
 def _run_git(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args],
@@ -272,6 +286,7 @@ def fetch_file(
     """
     url = f"https://github.com/{host_org}/{repo}.git"
     with tempfile.TemporaryDirectory() as tmp:
+
         def git(args: list[str]) -> subprocess.CompletedProcess:
             return _run_git(["-C", tmp, *args], timeout)
 
@@ -281,39 +296,61 @@ def fetch_file(
             raise ResolveError("git remote add failed")
 
         if token:
-            # Inject auth as a config header (never on the command line or
-            # in the URL, so it cannot leak via process listings or logs).
-            basic = base64.b64encode(
-                f"x-access-token:{token}".encode()
-            ).decode()
-            cfg = git([
-                "config", "--local",
-                "http.https://github.com/.extraheader",
-                f"AUTHORIZATION: basic {basic}",
-            ])
-            if cfg.returncode != 0:
-                raise ResolveError("git auth header configuration failed")
+            # Inject auth as a git config header. We write it straight
+            # into the repo's local config file rather than via
+            # `git config <key> <value>`, because the latter would place
+            # the credential in a child process's argv (visible in
+            # process listings). Writing the file keeps the token off
+            # the command line entirely; it is also never placed in the
+            # remote URL.
+            basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            config_path = os.path.join(tmp, ".git", "config")
+            header_line = f"\textraheader = AUTHORIZATION: basic {basic}\n"
+            try:
+                with open(config_path, "a", encoding="utf-8") as fh:
+                    fh.write('[http "https://github.com/"]\n')
+                    fh.write(header_line)
+            except OSError as exc:
+                raise ResolveError(f"git auth header configuration failed: {exc}")
 
-        fetched = git([
-            "-c", "protocol.version=2",
-            "fetch", "-q", "--depth", "1", "origin", ref,
-        ])
+        fetched = git(
+            [
+                "-c",
+                "protocol.version=2",
+                "fetch",
+                "-q",
+                "--depth",
+                "1",
+                "origin",
+                ref,
+            ]
+        )
         if fetched.returncode != 0:
             raise ResolveError(
                 f"git fetch of '{ref}' from {host_org}/{repo} failed: "
                 f"{fetched.stderr.strip()}"
             )
 
-        rev = git(["rev-parse", "FETCH_HEAD"])
+        # Peel to the underlying commit. For an annotated tag,
+        # FETCH_HEAD can name the tag object rather than the commit it
+        # points at; '^{commit}' dereferences it so resolved_sha is
+        # always a commit SHA, consistent across branch, lightweight
+        # tag, annotated tag and commit-SHA refs.
+        rev = git(["rev-parse", "FETCH_HEAD^{commit}"])
         if rev.returncode != 0:
             raise ResolveError("could not resolve FETCH_HEAD to a commit SHA")
         resolved_sha = rev.stdout.strip()
 
         for cand in candidates:
-            exists = git(["cat-file", "-e", f"FETCH_HEAD:{cand}"])
-            if exists.returncode != 0:
+            # Use 'cat-file -t' (not '-e'): '-e' also succeeds for a
+            # tree, and 'git show <commit>:<dir>' would then print a
+            # directory listing that we'd mistake for file content.
+            # Only accept a blob, matching the local-path mode's
+            # regular-file requirement.
+            typ = git(["cat-file", "-t", f"{resolved_sha}:{cand}"])
+            if typ.returncode != 0 or typ.stdout.strip() != "blob":
                 continue
-            size = git(["cat-file", "-s", f"FETCH_HEAD:{cand}"])
+            size = git(["cat-file", "-s", f"{resolved_sha}:{cand}"])
             try:
                 if size.returncode == 0 and int(size.stdout.strip()) > MAX_FILE_BYTES:
                     raise ResolveError(
@@ -321,7 +358,7 @@ def fetch_file(
                     )
             except ValueError:
                 pass
-            shown = git(["show", f"FETCH_HEAD:{cand}"])
+            shown = git(["show", f"{resolved_sha}:{cand}"])
             if shown.returncode != 0:
                 continue
             return {
@@ -343,6 +380,7 @@ def fetch_file(
 # Sanitisation (mode-selected)
 # ---------------------------------------------------------------------
 
+
 def _strip_comments_and_split(raw: str) -> list[str]:
     text = raw.lstrip("\ufeff")
     # Remove '#' comments (full-line and trailing-after-whitespace).
@@ -355,9 +393,7 @@ def _strip_comments_and_split(raw: str) -> list[str]:
 
 _HOST_BARE = r"[A-Za-z0-9][A-Za-z0-9.-]*"
 _HOST_WILD = r"\*\.[A-Za-z0-9][A-Za-z0-9.-]*"
-_ENDPOINT_RE = re.compile(
-    rf"^(?:{_HOST_BARE}|{_HOST_WILD})(?::[0-9]{{1,5}})?$"
-)
+_ENDPOINT_RE = re.compile(rf"^(?:{_HOST_BARE}|{_HOST_WILD})(?::[0-9]{{1,5}})?$")
 
 _VULN_RE = re.compile(
     r"^(?:"
@@ -392,8 +428,7 @@ def sanitise(raw: str, mode: str) -> list[str]:
                 port = token.rsplit(":", 1)[1]
                 if not port.isdigit() or not (1 <= int(port) <= 65535):
                     raise ResolveError(
-                        f"rejected endpoint token '{token}' "
-                        "(port out of range 1-65535)"
+                        f"rejected endpoint token '{token}' (port out of range 1-65535)"
                     )
         elif mode == "vulns":
             if not _VULN_RE.match(token):
@@ -411,6 +446,7 @@ def sanitise(raw: str, mode: str) -> list[str]:
 # Emit helpers
 # ---------------------------------------------------------------------
 
+
 def _append(path: str, text: str) -> None:
     if not path:
         return
@@ -427,9 +463,9 @@ def write_github_output(path: str, content_key: str, result: dict) -> None:
         "count": str(result["count"]),
         "found": "true" if result["found"] else "false",
         "path_explicit": "true" if result["path_explicit"] else "false",
-        "host_org": result["host_org"],
-        "repo": result["repo"],
-        "ref": result["ref"],
+        "resolved_host_org": result["host_org"],
+        "resolved_repo": result["repo"],
+        "resolved_ref": result["ref"],
         "resolved_sha": result["resolved_sha"],
         "resolved_path": result["matched_path"],
         "matched_candidate": result["matched_candidate"],
@@ -449,7 +485,8 @@ def write_step_summary(path: str, title: str, unit: str, result: dict) -> None:
     expanded = (
         f"{result['host_org']}/{result['repo']}/"
         f"{result['matched_path']}@{result['ref']}"
-        if result["found"] else "(none found)"
+        if result["found"]
+        else "(none found)"
     )
     lines = [
         f"### {title}",
@@ -467,6 +504,7 @@ def write_step_summary(path: str, title: str, unit: str, result: dict) -> None:
 # ---------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -491,7 +529,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--content-key", default="ids")
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
-    parser.add_argument("--step-summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""))
+    parser.add_argument(
+        "--step-summary", default=os.environ.get("GITHUB_STEP_SUMMARY", "")
+    )
     parser.add_argument("--summary-title", default="")
     parser.add_argument("--summary-unit", default="Entries")
     parser.add_argument("--json-stdout", action="store_true")
@@ -500,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
     token = args.token
     if args.token_env:
         token = os.environ.get(args.token_env, "")
+        # Drop the secret from the environment immediately after reading
+        # it, so the git subprocesses spawned below (which inherit
+        # os.environ) do not carry the token in their environment. The
+        # credential reaches git only via the repo-local config header.
+        os.environ.pop(args.token_env, None)
 
     try:
         resolved = resolve(
@@ -565,6 +610,24 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except subprocess.TimeoutExpired:
         print("config resolution error: git operation timed out", file=sys.stderr)
+        return 1
+    except FileNotFoundError:
+        # 'git' is not installed / not on PATH.
+        print(
+            "config resolution error: the 'git' executable was not found",
+            file=sys.stderr,
+        )
+        return 1
+    except UnicodeDecodeError:
+        # A fetched blob (or git output) was not valid UTF-8.
+        print(
+            "config resolution error: fetched content is not valid UTF-8",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as exc:
+        # Any other failure spawning git or reading/writing files.
+        print(f"config resolution error: {exc}", file=sys.stderr)
         return 1
 
 

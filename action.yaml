@@ -67,8 +67,9 @@ inputs:
       GitHub-Actions 'uses:'-style coordinate identifying a remote
       allow-list file, fetched with a shallow, ref-pinned git fetch
       (branch, tag or commit SHA). Mutually exclusive with the
-      'path', 'url' and 'org' inputs; supplying any of them together
-      with 'config' is an error. See the README for the full grammar.
+      'allow_list_path', 'url' and 'org' inputs; supplying any of them
+      together with 'config' is an error. See the README for the full
+      grammar.
       Examples:
         lfreleng-actions@main
         lfit@v1.1.0
@@ -90,8 +91,8 @@ inputs:
       Whether to write the allow-list/config block to the job step
       summary. Set to 'false' to suppress it. Useful for matrix jobs,
       where the same block would otherwise repeat once per leg; emit
-      it on a single leg with, e.g.,
-      allow_list_summary: ${{ strategy.job-index == 0 }}.
+      it on a single matrix leg only (see the README for the
+      strategy.job-index pattern).
     required: false
     default: "true"
 
@@ -103,11 +104,12 @@ outputs:
   source:
     description: >
       The source from which the action loaded the allow-list: 'path',
-      'url' or 'default-url'.
+      'url', 'default-url' or 'config'.
   resolved_url:
     description: >
       When the action fetched the allow-list from a URL, the URL that
-      it used. Empty when the source was a local 'path'.
+      it used. Empty when the source was a local 'path' or 'config'
+      (config mode reports the resolved_* outputs instead).
   resolved_host_org:
     description: >
       Host org the allow-list was fetched from (config mode).

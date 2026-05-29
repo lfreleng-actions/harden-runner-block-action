@@ -414,8 +414,10 @@ function sanitise(raw) {
 
 function runConfigFlow() {
   // Mask the token before anything else so it cannot leak into logs.
+  // Escape the value so a token containing %, CR or LF cannot break
+  // the ::add-mask:: command or inject additional workflow commands.
   if (inputToken) {
-    console.log(`::add-mask::${inputToken}`);
+    console.log(`::add-mask::${escapeWorkflowCommand(inputToken)}`);
   }
 
   // Preflight: the shared resolver needs python3 on the runner.
@@ -434,7 +436,13 @@ function runConfigFlow() {
     : (process.env.GITHUB_STEP_SUMMARY || '');
 
   // The token is passed via the environment (CONFIG_TOKEN), never on
-  // the command line, so it cannot appear in a process listing.
+  // the command line, so it cannot appear in a process listing. We
+  // also strip the runner-provided INPUT_TOKEN from the child
+  // environment: the resolver reads (and pops) CONFIG_TOKEN, so
+  // leaving INPUT_TOKEN in place would still leak the secret into the
+  // git subprocesses the resolver spawns.
+  const childEnv = { ...process.env, CONFIG_TOKEN: inputToken };
+  delete childEnv.INPUT_TOKEN;
   const res = spawnSync('python3', [
     script,
     '--config', inputConfig,
@@ -450,7 +458,12 @@ function runConfigFlow() {
     '--json-stdout',
   ], {
     encoding: 'utf8',
-    env: { ...process.env, CONFIG_TOKEN: inputToken },
+    env: childEnv,
+    // The resolver allows allow-list files up to 1 MiB and serialises
+    // the token list as JSON on stdout; raise maxBuffer well above
+    // Node's 1 MiB default so a near-limit file cannot trigger
+    // ENOBUFS before the env var is exported.
+    maxBuffer: 16 * 1024 * 1024,
   });
 
   if (res.stderr) {
