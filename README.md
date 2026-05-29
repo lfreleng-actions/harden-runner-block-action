@@ -114,6 +114,8 @@ steps:
 | `url`             | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
 | `org`             | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
 | `env_var_name`    | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
+| `config`          | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
+| `token`           | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -124,10 +126,131 @@ steps:
 | Name                | Description                                                                       |
 | ------------------- | --------------------------------------------------------------------------------- |
 | `allowed_endpoints` | The sanitised, space-separated allowed-endpoints allow-list string.               |
-| `source`            | One of `path`, `url`, `default-url`.                                              |
+| `source`            | One of `path`, `url`, `default-url`, `config`.                                    |
 | `resolved_url`      | The URL the action used when fetching remotely. Empty when source was `path`.     |
+| `resolved_host_org` | Host org that supplied the allow-list (`config` mode).                            |
+| `resolved_repo`     | Repository that supplied the allow-list (`config` mode).                          |
+| `resolved_ref`      | Git ref requested for the `config` fetch.                                         |
+| `resolved_sha`      | Exact commit SHA the `config` ref resolved to.                                    |
+| `resolved_path`     | In-repo path of the matched `config` file.                                        |
+| `matched_candidate` | Search candidate that matched: `org-specific`, `family-default` or `explicit`.    |
 
 <!-- markdownlint-enable MD013 -->
+
+## Pinned allow-list via `config` (git, SHA-pinnable)
+
+The `config` input is a GitHub-Actions `uses:`-style coordinate that
+identifies a remote allow-list file and fetches it with a shallow,
+ref-pinned **git** fetch (rather than an unpinned HTTP download). It
+supports branches, tags and commit SHAs, so you can pin the
+allow-list to an immutable commit, much like an action pin.
+
+> [!IMPORTANT]
+> `config` is **mutually exclusive** with `allow_list_path`, `url`
+> and `org`. Supplying any of them together with `config` is an
+> error.
+
+<!-- markdownlint-disable MD013 -->
+
+```yaml
+steps:
+  - uses: lfreleng-actions/harden-runner-block-action@v0.1.0
+    with:
+      config: 'lfreleng-actions@v0.1.0'
+
+  - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
+    with:
+      egress-policy: block
+      allowed-endpoints: ${{ env.CONNECTION_ALLOW_LIST }}
+```
+
+<!-- markdownlint-enable MD013 -->
+
+### `config` grammar
+
+```text
+<config> ::= <source> [ "@" <ref> ] [ <ws>+ "#" <comment> ]
+<source> ::= [ <host-org> [ "/" <repo> ] ] [ "//" <subpath> ]
+```
+
+Defaults applied to anything you omit:
+
+<!-- markdownlint-disable MD013 -->
+
+| Element   | Default                                                               |
+| --------- | --------------------------------------------------------------------- |
+| host-org  | `github.repository_owner` (when you omit the org)                     |
+| repo      | `.github`                                                             |
+| directory | `.github/harden-runner/<workflow-org>/` then `.github/harden-runner/` |
+| filename  | `allow_list.txt`                                                      |
+| ref       | the host repo's default branch (`HEAD`)                               |
+
+<!-- markdownlint-enable MD013 -->
+
+- The `//` separator splits the repository from the in-repo path
+  (the same convention Terraform/go-getter use). Text after `//`:
+  - **empty** (or no `//`) — default directory search + default
+    filename.
+  - **bare filename** (no `/`) — overrides the filename, keeps the
+    default directory search.
+  - **contains a `/`** — an explicit in-repo path; the action skips
+    the search and that exact path must exist.
+- One or more spaces then `#` starts a trailing comment, which the
+  parser drops (`#`, `#`, `\t#` all work).
+- The output `resolved_sha` always reports the commit the ref
+  resolved to, even when you pin a branch or tag.
+
+### Search / fallback chain
+
+When the directory is auto-derived (you did not give an explicit
+directory after `//`), the action tries, in order:
+
+1. `.github/harden-runner/<workflow-org>/<filename>` (org-specific)
+2. `.github/harden-runner/<filename>` (host-wide family default)
+
+The first file that exists wins. Because an empty allow-list would
+break egress under block mode, this action treats "no file found"
+as a hard error (unlike the sibling `python-audit-action`, which
+treats a default-path miss as a soft no-op).
+
+### `config` examples
+
+Assuming the workflow runs in org `onap`:
+
+<!-- markdownlint-disable MD013 -->
+
+| `config` value                         | Fetched from                    | In-repo path (search chain)                                                |
+| -------------------------------------- | ------------------------------- | -------------------------------------------------------------------------- |
+| `lfreleng-actions@main`                | `lfreleng-actions/.github@main` | `…/harden-runner/onap/allow_list.txt` → `…/harden-runner/allow_list.txt`   |
+| `lfit@v1.1.0`                          | `lfit/.github@v1.1.0`           | same chain                                                                 |
+| `lfit@ab7a940… # v1.0.0`               | `lfit/.github@<sha>`            | same chain; comment ignored                                                |
+| `lfit//custom_list.txt@v1.1.0  # ONAP` | `lfit/.github@v1.1.0`           | `…/harden-runner/onap/custom_list.txt` → `…/harden-runner/custom_list.txt` |
+| `lfit//@ab7a940…`                      | `lfit/.github@<sha>`            | default chain + `allow_list.txt`                                           |
+| `lfit//configs/onap/list.txt@main`     | `lfit/.github@main`             | `configs/onap/list.txt` (explicit; no search)                              |
+| `//team_list.txt@main`                 | `onap/.github@main`             | `…/harden-runner/onap/team_list.txt` → `…/harden-runner/team_list.txt`     |
+
+<!-- markdownlint-enable MD013 -->
+
+### Private host repositories
+
+For a private host-org `.github` repo, pass a token with
+`contents:read` on that repo. `GITHUB_TOKEN` grants access to the
+current repository alone, so pass a PAT or GitHub App token here:
+
+```yaml
+    with:
+      config: 'my-private-org@v2.0.0'
+      token: ${{ secrets.CONFIG_READ_TOKEN }}
+```
+
+> [!NOTE]
+> `config` resolution uses the runner's preinstalled `python3` (the
+> resolver needs no third-party packages). GitHub-hosted runners
+> ship it; on self-hosted runners `python3` must sit on `PATH`. Both
+> repositories mirror the shared parser
+> `src/resolve_config_source.py`, and changes must land as paired
+> pull requests across `harden-runner-block-action` and
+> `python-audit-action`.
 
 ## Allow-list file format
 

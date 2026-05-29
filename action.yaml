@@ -62,6 +62,29 @@ inputs:
       underscores; cannot start with a digit).
     required: false
     default: "CONNECTION_ALLOW_LIST"
+  config:
+    description: >
+      GitHub-Actions 'uses:'-style coordinate identifying a remote
+      allow-list file, fetched with a shallow, ref-pinned git fetch
+      (branch, tag or commit SHA). Mutually exclusive with the
+      'path', 'url' and 'org' inputs; supplying any of them together
+      with 'config' is an error. See the README for the full grammar.
+      Examples:
+        lfreleng-actions@main
+        lfit@v1.1.0
+        lfit//custom_list.txt@v1.1.0
+        lfit//@<sha>
+    required: false
+    default: ""
+  token:
+    description: >
+      Token used to authenticate the git fetch when 'config' targets
+      a private host repository. Leave empty for public repositories.
+      GITHUB_TOKEN only grants access to the current repository;
+      reading a private config repo in another org needs a PAT or
+      GitHub App token with contents:read on that repo.
+    required: false
+    default: ""
 
 outputs:
   allowed_endpoints:
@@ -76,6 +99,25 @@ outputs:
     description: >
       When the action fetched the allow-list from a URL, the URL that
       it used. Empty when the source was a local 'path'.
+  resolved_host_org:
+    description: >
+      Host org the allow-list was fetched from (config mode).
+  resolved_repo:
+    description: >
+      Repository the allow-list was fetched from (config mode).
+  resolved_ref:
+    description: >
+      Git ref requested for the config fetch (config mode).
+  resolved_sha:
+    description: >
+      Exact commit SHA the config ref resolved to (config mode).
+  resolved_path:
+    description: >
+      In-repo path of the matched config file (config mode).
+  matched_candidate:
+    description: >
+      Which search candidate matched: org-specific, family-default or
+      explicit (config mode).
 
 runs:
   using: "node20"
