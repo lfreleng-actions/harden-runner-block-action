@@ -85,6 +85,15 @@ inputs:
       GitHub App token with contents:read on that repo.
     required: false
     default: ""
+  allow_list_summary:
+    description: >
+      Whether to write the allow-list/config block to the job step
+      summary. Set to 'false' to suppress it. Useful for matrix jobs,
+      where the same block would otherwise repeat once per leg; emit
+      it on a single leg with, e.g.,
+      allow_list_summary: ${{ strategy.job-index == 0 }}.
+    required: false
+    default: "true"
 
 outputs:
   allowed_endpoints:

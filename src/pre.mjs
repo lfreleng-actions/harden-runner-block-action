@@ -147,6 +147,7 @@ const inputUrl = getInput('url');
 const inputOrg = getInput('org');
 const inputConfig = getInput('config');
 const inputToken = getInput('token');
+const inputAllowListSummary = getInput('allow_list_summary', 'true');
 const envVarName = getInput('env_var_name', 'CONNECTION_ALLOW_LIST');
 
 // 'config' is mutually exclusive with the legacy source inputs.
@@ -426,6 +427,12 @@ function runConfigFlow() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const script = path.join(here, 'resolve_config_source.py');
 
+  // An empty --step-summary target suppresses the summary block
+  // (e.g. matrix legs other than the first).
+  const summaryTarget = inputAllowListSummary === 'false'
+    ? ''
+    : (process.env.GITHUB_STEP_SUMMARY || '');
+
   // The token is passed via the environment (CONFIG_TOKEN), never on
   // the command line, so it cannot appear in a process listing.
   const res = spawnSync('python3', [
@@ -439,7 +446,7 @@ function runConfigFlow() {
     '--summary-title', '🛡️ Harden Runner Allow-list',
     '--summary-unit', 'Endpoints',
     '--github-output', process.env.GITHUB_OUTPUT || '',
-    '--step-summary', process.env.GITHUB_STEP_SUMMARY || '',
+    '--step-summary', summaryTarget,
     '--json-stdout',
   ], {
     encoding: 'utf8',
@@ -499,16 +506,18 @@ function runConfigFlow() {
 
   const count = sanitised.split(' ').filter(Boolean).length;
   info(`Loaded ${count} allow-list endpoints ✅`);
-  stepSummary(
-    [
-      "### 🛡️ Harden Runner Allow-list",
-      "",
-      `- Source: \`${source}\`${displayUrl ? `  (\`${displayUrl}\`)` : ''}`,
-      `- Endpoints loaded: **${count}**`,
-      `- Published as env var: \`${envVarName}\``,
-      "",
-    ].join('\n')
-  );
+  if (inputAllowListSummary !== 'false') {
+    stepSummary(
+      [
+        "### 🛡️ Harden Runner Allow-list",
+        "",
+        `- Source: \`${source}\`${displayUrl ? `  (\`${displayUrl}\`)` : ''}`,
+        `- Endpoints loaded: **${count}**`,
+        `- Published as env var: \`${envVarName}\``,
+        "",
+      ].join('\n')
+    );
+  }
 })().catch((e) => {
   fail(`Unexpected error in pre step: ${e.stack || e.message || e} ❌`);
 });

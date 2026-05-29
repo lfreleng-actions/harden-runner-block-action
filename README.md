@@ -108,14 +108,15 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name              | Required | Default                 | Description                                                                                                                                                      |
-| ----------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_list_path` | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
-| `url`             | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
-| `org`             | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
-| `env_var_name`    | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
-| `config`          | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
-| `token`           | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
+| Name                 | Required | Default                 | Description                                                                                                                                                      |
+| -------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_list_path`    | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
+| `url`                | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
+| `org`                | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
+| `env_var_name`       | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
+| `config`             | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
+| `token`              | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
+| `allow_list_summary` | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                   |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -251,6 +252,24 @@ current repository alone, so pass a PAT or GitHub App token here:
 > `src/resolve_config_source.py`, and changes must land as paired
 > pull requests across `harden-runner-block-action` and
 > `python-audit-action`.
+
+### Suppressing the step summary on matrix jobs
+
+Each matrix leg is a separate job with its own step summary, so the
+allow-list block repeats once per leg. An action cannot detect the
+matrix context itself, but the calling workflow can. Set
+`allow_list_summary` so a single leg emits the block:
+
+```yaml
+    with:
+      config: 'lfreleng-actions@v0.1.0'
+      # Emit the allow-list summary from the first matrix leg.
+      allow_list_summary: ${{ strategy.job-index == 0 }}
+```
+
+Outside a matrix, `strategy.job-index` is empty; use
+`${{ !strategy.job-total || strategy.job-index == 0 }}` if a single
+template must cover both matrix and non-matrix jobs.
 
 ## Allow-list file format
 
