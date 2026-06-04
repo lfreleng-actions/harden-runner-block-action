@@ -113,6 +113,19 @@ repos:
     rev: 2c315e461ec3379bf9c1682360fdc1a3899f88c9  # frozen: v1.0.4
     hooks:
       - id: gha-workflow-linter
+        # Exclude the integration self-test from the SHA-pin audit,
+        # mirroring the CI workflow (sha-pinned-actions.yaml). That
+        # workflow intentionally references this action via '@main'
+        # (the 'uses:' field cannot interpolate '${{ github.sha }}'),
+        # so the linter must not rewrite it to a commit SHA. The hook
+        # sets 'pass_filenames: false' and scans '.', so a file-level
+        # 'exclude:' has no effect; the path must be passed to the
+        # linter via '--exclude'.
+        args:
+          - lint
+          - --exclude
+          - .github/workflows/integration.yaml
+          - .
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: 943377262562a12b57292fc98fabd7dbf81451fe  # frozen: 0.37.2
