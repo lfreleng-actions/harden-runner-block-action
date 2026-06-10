@@ -54,7 +54,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Stage local allow-list file"
         id: stage
@@ -137,7 +137,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs against the default URL"
         shell: bash
@@ -197,7 +197,7 @@ jobs:
     steps:
       - name: "Checkout repository"
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs in config mode"
         shell: bash
@@ -264,7 +264,7 @@ jobs:
     steps:
       - name: "Checkout repository"
         # yamllint disable-line rule:line-length
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs with config + org (must fail)"
         shell: bash
@@ -305,7 +305,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs with custom env_var_name"
         shell: bash
@@ -346,7 +346,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Stage malicious allow-list file"
         id: stage
@@ -402,7 +402,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Stage allow-list with bad port"
         id: stage
@@ -451,7 +451,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs against missing file"
         shell: bash
@@ -490,7 +490,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs with lowercase env_var_name"
         shell: bash
@@ -529,7 +529,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs with newline in path"
         shell: bash
@@ -581,7 +581,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: "Run pre.mjs against a credential-bearing URL"
         shell: bash
