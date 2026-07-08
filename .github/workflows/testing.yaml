@@ -55,6 +55,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Stage local allow-list file"
         id: stage
@@ -138,6 +140,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs against the default URL"
         shell: bash
@@ -198,6 +202,8 @@ jobs:
       - name: "Checkout repository"
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs in config mode"
         shell: bash
@@ -265,6 +271,8 @@ jobs:
       - name: "Checkout repository"
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs with config + org (must fail)"
         shell: bash
@@ -306,6 +314,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs with custom env_var_name"
         shell: bash
@@ -347,6 +357,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Stage malicious allow-list file"
         id: stage
@@ -403,6 +415,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Stage allow-list with bad port"
         id: stage
@@ -452,6 +466,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs against missing file"
         shell: bash
@@ -491,6 +507,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs with lowercase env_var_name"
         shell: bash
@@ -530,6 +548,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs with newline in path"
         shell: bash
@@ -582,6 +602,8 @@ jobs:
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Run pre.mjs against a credential-bearing URL"
         shell: bash
