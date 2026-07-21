@@ -48,12 +48,16 @@ jobs:
       # would not interpolate). For a workflow that fires on
       # push to main, '@main' is the just-pushed commit anyway;
       # the small race window with a later push is acceptable for
-      # an integration test. zizmor's unpinned-uses audit is
-      # suppressed below for the same reason: a SHA pin is not
-      # workable for an in-repo, post-merge self-test of @main.
+      # an integration test. zizmor's unpinned-uses audit and
+      # gha-workflow-linter's SHA-pin check are suppressed below
+      # for the same reason: a SHA pin is not workable for an
+      # in-repo, post-merge self-test of @main. The trailing
+      # 'self-test' wording matters: gha-workflow-linter treats a
+      # comment containing a 'test' word as a deliberate test
+      # reference and downgrades the finding to a warning.
       - name: "Load allow-list (action under test, full ref)"
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/harden-runner-block-action@main # zizmor: ignore[unpinned-uses]
+        uses: lfreleng-actions/harden-runner-block-action@main # zizmor: ignore[unpinned-uses] intentional self-test of @main
         with:
           org: 'lfreleng-actions'
 
