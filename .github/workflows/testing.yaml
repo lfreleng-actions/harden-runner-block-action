@@ -678,3 +678,117 @@ jobs:
             exit 1
           fi
           echo "URL redaction validated ✅"
+
+  ### Format equivalence: proves the ingress file layout does not
+  ### change what the action publishes. The same endpoints are staged
+  ### twice -- once as the legacy single, space-separated line, once as
+  ### the new one-per-line file with header, full-line and inline '#'
+  ### comments -- and the two published env-var values must be
+  ### byte-identical. This is the production safety net for
+  ### lfreleng-actions/.github#99: reformatting allow_list.txt must not
+  ### perturb the allowed-endpoints list harden-runner enforces.
+  test-format-equivalence:
+    name: "Format equivalence: single-line vs multi-line"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: "Stage single-line and multi-line allow-list fixtures"
+        id: stage
+        shell: bash
+        run: |
+          # Stage both fixtures with the SAME endpoints in the SAME
+          # order (the sanitiser preserves order, so the published
+          # strings can only match if the layouts are truly equivalent).
+          set -euo pipefail
+          single="${RUNNER_TEMP}/single-line.txt"
+          multi="${RUNNER_TEMP}/multi-line.txt"
+
+          # Legacy format: one long, space-separated line. Build it
+          # from short args so no source line exceeds the length limit;
+          # the '%s ' template yields a single space-separated line.
+          printf '%s ' \
+            'github.com:443' \
+            'api.github.com:443' \
+            '*.githubusercontent.com:443' \
+            'azure.archive.ubuntu.com:80' \
+            'gerrit.o-ran-sc.org:29418' \
+            'astral.sh' > "$single"
+          printf '\n' >> "$single"
+
+          # New format: one host[:port] per line, with a header block,
+          # a full-line rationale comment and inline '#' comments.
+          cat > "$multi" <<'EOF'
+          # SPDX-License-Identifier: Apache-2.0
+          # egress allow-list (one host[:port] per line)
+
+          github.com:443
+          # GitHub REST API
+          api.github.com:443
+          *.githubusercontent.com:443  # subdomain wildcard
+          azure.archive.ubuntu.com:80
+          gerrit.o-ran-sc.org:29418	# gerrit SSH (tab before comment)
+          astral.sh
+          EOF
+
+          echo "single=$single" >> "$GITHUB_OUTPUT"
+          echo "multi=$multi" >> "$GITHUB_OUTPUT"
+
+      - name: "Run pre.mjs on both fixtures and diff the output"
+        shell: bash
+        env:
+          SINGLE_FILE: ${{ steps.stage.outputs.single }}
+          MULTI_FILE: ${{ steps.stage.outputs.multi }}
+        run: |
+          # Run pre.mjs on both fixtures and diff the output
+          set -euo pipefail
+
+          run_and_capture() {
+            # $1 = allow-list path; echoes the published env-var value.
+            local path="$1"
+            local env_file
+            env_file="$(mktemp "${RUNNER_TEMP}/env.XXXXXX")"
+            INPUT_ALLOW_LIST_PATH="$path" \
+            INPUT_URL="" \
+            INPUT_ORG="" \
+            INPUT_ENV_VAR_NAME="CONNECTION_ALLOW_LIST" \
+            GITHUB_ENV="$env_file" \
+            GITHUB_OUTPUT="$(mktemp "${RUNNER_TEMP}/out.XXXXXX")" \
+            GITHUB_STEP_SUMMARY="$(mktemp "${RUNNER_TEMP}/sum.XXXXXX")" \
+              node src/pre.mjs >/dev/null
+            sed -n 's/^CONNECTION_ALLOW_LIST=//p' "$env_file"
+          }
+
+          single_value="$(run_and_capture "$SINGLE_FILE")"
+          multi_value="$(run_and_capture "$MULTI_FILE")"
+
+          echo "::group::Published values"
+          echo "single-line: $single_value"
+          echo "multi-line : $multi_value"
+          echo "::endgroup::"
+
+          if [ -z "$single_value" ]; then
+            echo "Error: single-line fixture published no value ❌"
+            exit 1
+          fi
+          if [ "$single_value" != "$multi_value" ]; then
+            echo "Error: output differs between file formats ❌"
+            diff <(printf '%s\n' "$single_value") \
+                 <(printf '%s\n' "$multi_value") || true
+            exit 1
+          fi
+          # Comments must never leak into the published list.
+          for leaked in 'subdomain' 'wildcard' 'gerrit SSH' 'REST' '#'; do
+            if printf '%s' "$multi_value" | grep -F -q "$leaked"; then
+              echo "Error: comment text '$leaked' leaked into output ❌"
+              exit 1
+            fi
+          done
+          count=$(printf '%s' "$single_value" | wc -w | tr -d ' ')
+          echo "Both formats published an identical $count-endpoint list ✅"
