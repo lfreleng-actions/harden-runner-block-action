@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Pin the ruff rule set explicitly.
+#
+# Without a `select`, ruff applies its *default* rule set, and that
+# default is not stable across releases:
+#
+#     ruff 0.15.22 ->  59 rules across  2 categories (E, F)
+#     ruff 0.16.0  -> 413 rules across 38 categories
+#
+# A routine pre-commit autoupdate crossing that boundary changed which
+# rules run and broke repositories across this organisation, on code
+# nobody had touched.
+#
+# The selection below is deliberately narrow: it is the widest set this
+# repository already satisfies, so pinning changes no behaviour today.
+# It is a subset of the organisation superset
+# ("E", "W", "F", "I", "B", "C4", "UP"), short by "I" and "B".  Adopting
+# those two is worthwhile but is a code change, not a configuration one:
+#
+#   - "B" adds one B904 (raise-without-from) site in
+#     src/resolve_config_source.py, which needs a judgement about which
+#     exception context to preserve.
+#   - "I" flags the import block in the test modules, which deliberately
+#     call sys.path.insert() before importing the module under test.
+#     One of those files is mirrored byte-for-byte with a sibling
+#     repository and is marked "DO NOT EDIT IN ISOLATION", so touching
+#     it requires paired pull requests in both repositories.
+#
+# Both belong in their own reviewed change rather than riding along with
+# a version bump.
+#
+# Note that this pins the rule set at CATEGORY level, not rule level.
+# Ruff selectors are prefixes, so a future release adding new E* or F*
+# rules would enable them here automatically.  Pinning every rule code
+# individually would be exhaustive and unmaintainable; the aim is to
+# bound the blast radius, reducing "413 rules across 38 categories"
+# back to five, not to freeze the set outright.
+#
+# `line-length` and `target-version` are intentionally left unset so
+# ruff's own defaults continue to apply unchanged.
+
+[lint]
+select = ["E", "W", "F", "C4", "UP"]
+
+ignore = [
+  "E501", # line-too-long: the formatter owns line length
+]
+
+[lint.per-file-ignores]
+# Test suites legitimately break rules that matter in library code.
+#
+# None of these codes is reachable under the current `select`.  They are
+# listed anyway so that a later widening, to "S", "ARG" or "PL", does not
+# immediately flag every test module.  PLR0917 is the concrete case
+# already seen elsewhere in this organisation: tests stacking @patch
+# decorators cannot satisfy it, because unittest.mock injects its mocks
+# positionally, so a keyword-only signature is impossible rather than
+# merely inconvenient.
+"tests/**/*.py" = ["S101", "ARG", "PLR0913", "PLR0917", "PLR2004"]
