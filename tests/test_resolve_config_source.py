@@ -284,6 +284,12 @@ def _install_fake_git(
         if sub[:1] == ["show"]:
             path = sub[1].split(":", 1)[1]
             return cp(0, files[path])
+        if sub[:1] == ["ls-tree"]:
+            prefix = sub[-1]
+            listed = [
+                p for p in sorted(files) if p == prefix or p.startswith(prefix + "/")
+            ]
+            return cp(0, "".join(f"{p}\n" for p in listed))
         return cp(0)
 
     monkeypatch.setattr(rcs, "_run_git", fake_run_git)
@@ -408,3 +414,140 @@ def test_fetch_file_directory_only_not_found(monkeypatch):
         candidates=cands,
     )
     assert result["found"] is False
+
+
+# ---------------------------------------------------------------------
+# fetch_file: sole-org fallback (fork scenario)
+# ---------------------------------------------------------------------
+
+
+def test_fetch_file_sole_org_fallback(monkeypatch):
+    # Fork scenario: the workflow org derives fork-specific candidates,
+    # but the fetched tree carries exactly one (upstream) org's file.
+    cands = [
+        ".github/harden-runner/fork-org/allow_list.txt",
+        ".github/harden-runner/allow_list.txt",
+    ]
+    upstream = ".github/harden-runner/lfreleng-actions/allow_list.txt"
+    _install_fake_git(monkeypatch, files={upstream: "github.com:443\n"})
+    result = rcs.fetch_file(
+        host_org="fork-org",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+        fallback_dir=".github/harden-runner",
+        fallback_filename="allow_list.txt",
+    )
+    assert result["found"] is True
+    assert result["fallback_used"] is True
+    assert result["matched_path"] == upstream
+    assert result["content"] == "github.com:443\n"
+
+
+def test_fetch_file_fallback_ambiguous_stays_missing(monkeypatch):
+    # Two org directories carry the file: the choice would be
+    # ambiguous, so the miss stands.
+    cands = [
+        ".github/harden-runner/fork-org/allow_list.txt",
+        ".github/harden-runner/allow_list.txt",
+    ]
+    _install_fake_git(
+        monkeypatch,
+        files={
+            ".github/harden-runner/org-a/allow_list.txt": "a.example:443\n",
+            ".github/harden-runner/org-b/allow_list.txt": "b.example:443\n",
+        },
+    )
+    result = rcs.fetch_file(
+        host_org="fork-org",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+        fallback_dir=".github/harden-runner",
+        fallback_filename="allow_list.txt",
+    )
+    assert result["found"] is False
+    assert result["fallback_used"] is False
+
+
+def test_fetch_file_fallback_ignores_other_filenames_and_depths(monkeypatch):
+    # Only `<dir>/<org>/<filename>` entries count: other filenames and
+    # deeper nesting are ignored, so a single valid entry still wins.
+    cands = [
+        ".github/harden-runner/fork-org/allow_list.txt",
+        ".github/harden-runner/allow_list.txt",
+    ]
+    upstream = ".github/harden-runner/lfreleng-actions/allow_list.txt"
+    _install_fake_git(
+        monkeypatch,
+        files={
+            upstream: "github.com:443\n",
+            ".github/harden-runner/org-a/other_list.txt": "x.example\n",
+            ".github/harden-runner/org-b/nested/allow_list.txt": "y.example\n",
+        },
+    )
+    result = rcs.fetch_file(
+        host_org="fork-org",
+        repo=".github",
+        ref="main",
+        candidates=cands,
+        fallback_dir=".github/harden-runner",
+        fallback_filename="allow_list.txt",
+    )
+    assert result["found"] is True
+    assert result["fallback_used"] is True
+    assert result["matched_path"] == upstream
+
+
+def test_fetch_file_fallback_rejects_non_blob(monkeypatch):
+    # A sole ls-tree match that is not a blob (e.g. a gitlink) must not
+    # resolve: the fallback applies the same blob guard as the
+    # candidate loop.
+    upstream = ".github/harden-runner/lfreleng-actions/allow_list.txt"
+    _install_fake_git(
+        monkeypatch,
+        files={upstream: "github.com:443\n"},
+        trees=[upstream],
+    )
+    result = rcs.fetch_file(
+        host_org="fork-org",
+        repo=".github",
+        ref="main",
+        candidates=[
+            ".github/harden-runner/fork-org/allow_list.txt",
+            ".github/harden-runner/allow_list.txt",
+        ],
+        fallback_dir=".github/harden-runner",
+        fallback_filename="allow_list.txt",
+    )
+    assert result["found"] is False
+    assert result["fallback_used"] is False
+
+
+def test_fetch_file_no_fallback_without_dir(monkeypatch):
+    # Explicit-path mode passes no fallback coordinates: a miss stays a
+    # miss even when an org file exists in the tree.
+    _install_fake_git(
+        monkeypatch,
+        files={".github/harden-runner/lfreleng-actions/allow_list.txt": "h:443\n"},
+    )
+    result = rcs.fetch_file(
+        host_org="fork-org",
+        repo=".github",
+        ref="main",
+        candidates=["custom/dir/allow_list.txt"],
+    )
+    assert result["found"] is False
+    assert result["fallback_used"] is False
+
+
+def test_resolve_exposes_fallback_coordinates():
+    resolved = _resolve("@deadbeef" + "0" * 32, org="fork-org")
+    assert resolved["fallback_dir"] == ".github/python-audit"
+    assert resolved["fallback_filename"] == "allow_list.txt"
+
+
+def test_resolve_explicit_path_has_no_fallback():
+    resolved = _resolve("lfit//configs/onap/list.txt@main")
+    assert resolved["fallback_dir"] == ""
+    assert resolved["fallback_filename"] == ""
