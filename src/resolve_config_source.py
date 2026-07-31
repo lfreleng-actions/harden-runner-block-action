@@ -209,6 +209,8 @@ def resolve(
 
     subpath = parts["subpath"]
     path_explicit = False
+    fallback_dir = ""
+    fallback_filename = ""
 
     if not parts["has_subpath"] or subpath == "":
         # No subpath, or a bare '//': default dir search chain + default file.
@@ -217,6 +219,8 @@ def resolve(
             f"{default_dir_specific}/{filename}",
             f"{default_dir_family}/{filename}",
         ]
+        fallback_dir = default_dir_family
+        fallback_filename = filename
     elif "/" not in subpath:
         # Filename only: override the filename, keep the default dir search.
         filename = subpath
@@ -224,6 +228,8 @@ def resolve(
             f"{default_dir_specific}/{filename}",
             f"{default_dir_family}/{filename}",
         ]
+        fallback_dir = default_dir_family
+        fallback_filename = filename
     else:
         # Explicit directory present: use exactly this path, no search.
         path_explicit = True
@@ -251,6 +257,8 @@ def resolve(
         "ref": ref,
         "candidates": candidates,
         "path_explicit": path_explicit,
+        "fallback_dir": fallback_dir,
+        "fallback_filename": fallback_filename,
         "comment": comment,
     }
 
@@ -277,12 +285,25 @@ def fetch_file(
     candidates: list[str],
     token: str = "",
     timeout: int = 30,
+    fallback_dir: str = "",
+    fallback_filename: str = "",
 ) -> dict:
     """Shallow-fetch `ref` and return the first existing candidate file.
 
     Works uniformly for branches, tags and commit SHAs: GitHub honours
     `git fetch --depth 1 <sha>` for reachable commits. Returns a dict with
-    found (bool), resolved_sha, matched_path, content (str | None).
+    found (bool), resolved_sha, matched_path, content (str | None) and
+    fallback_used (bool).
+
+    When every candidate misses and `fallback_dir`/`fallback_filename`
+    name an auto-derived search root, the fetched tree is scanned for
+    `<fallback_dir>/<org>/<fallback_filename>` entries. A single match
+    resolves as a "sole-org fallback": forks carry the upstream org's
+    file at the pinned ref but derive a different workflow org, so the
+    org-specific candidate can never match there even though exactly
+    one (byte-identical, ref-pinned) list exists in the tree. Zero or
+    several matches keep the miss (several would make the choice
+    ambiguous).
     """
     url = f"https://github.com/{host_org}/{repo}.git"
     with tempfile.TemporaryDirectory() as tmp:
@@ -366,13 +387,74 @@ def fetch_file(
                 "resolved_sha": resolved_sha,
                 "matched_path": cand,
                 "content": shown.stdout,
+                "fallback_used": False,
             }
+
+        if fallback_dir and fallback_filename:
+            listed = git(["ls-tree", "-r", "--name-only", resolved_sha, fallback_dir])
+            if listed.returncode == 0:
+                matches = []
+                for line in listed.stdout.splitlines():
+                    line = line.strip()
+                    if not line.startswith(f"{fallback_dir}/"):
+                        continue
+                    rel = line[len(fallback_dir) + 1 :]
+                    segs = rel.split("/")
+                    # Exactly one org directory between the family dir
+                    # and the filename, with a safe path segment (never
+                    # '.' or '..', matching resolve()'s validation), and
+                    # not a candidate we already tried above.
+                    if (
+                        len(segs) == 2
+                        and segs[1] == fallback_filename
+                        and segs[0] not in (".", "..")
+                        and SEGMENT_RE.match(segs[0])
+                        and line not in candidates
+                    ):
+                        matches.append(line)
+                if len(matches) == 1:
+                    cand = matches[0]
+                    # Same blob guard as the candidate loop above: only
+                    # accept regular files, not trees or gitlinks.
+                    typ = git(["cat-file", "-t", f"{resolved_sha}:{cand}"])
+                    if typ.returncode == 0 and typ.stdout.strip() == "blob":
+                        size = git(["cat-file", "-s", f"{resolved_sha}:{cand}"])
+                        try:
+                            if (
+                                size.returncode == 0
+                                and int(size.stdout.strip()) > MAX_FILE_BYTES
+                            ):
+                                raise ResolveError(
+                                    f"config file '{cand}' exceeds "
+                                    f"{MAX_FILE_BYTES}-byte limit"
+                                )
+                        except ValueError:
+                            pass
+                        shown = git(["show", f"{resolved_sha}:{cand}"])
+                        if shown.returncode == 0:
+                            return {
+                                "found": True,
+                                "resolved_sha": resolved_sha,
+                                "matched_path": cand,
+                                "content": shown.stdout,
+                                "fallback_used": True,
+                            }
+                elif len(matches) > 1:
+                    print(
+                        "sole-org fallback skipped: files named "
+                        f"'{fallback_filename}' exist under more than one "
+                        f"org directory in '{fallback_dir}/' "
+                        f"({len(matches)} matches); the choice would be "
+                        "ambiguous",
+                        file=sys.stderr,
+                    )
 
         return {
             "found": False,
             "resolved_sha": resolved_sha,
             "matched_path": "",
             "content": None,
+            "fallback_used": False,
         }
 
 
@@ -561,13 +643,17 @@ def main(argv: list[str] | None = None) -> int:
             candidates=resolved["candidates"],
             token=token,
             timeout=args.timeout,
+            fallback_dir=resolved["fallback_dir"],
+            fallback_filename=resolved["fallback_filename"],
         )
 
         tokens: list[str] = []
         matched_candidate = ""
         if fetched["found"]:
             tokens = sanitise(fetched["content"], args.mode)
-            if fetched["matched_path"] == resolved["candidates"][0]:
+            if fetched["fallback_used"]:
+                matched_candidate = "sole-org-fallback"
+            elif fetched["matched_path"] == resolved["candidates"][0]:
                 matched_candidate = (
                     "explicit" if resolved["path_explicit"] else "org-specific"
                 )

@@ -134,7 +134,7 @@ steps:
 | `resolved_ref`      | Git ref requested for the `config` fetch.                                                                                                    |
 | `resolved_sha`      | Exact commit SHA the `config` ref resolved to.                                                                                               |
 | `resolved_path`     | In-repo path of the matched `config` file.                                                                                                   |
-| `matched_candidate` | Search candidate that matched: `org-specific`, `family-default` or `explicit`.                                                               |
+| `matched_candidate` | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                          |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -210,8 +210,19 @@ directory after `//`), the action tries, in order:
 
 1. `.github/harden-runner/<workflow-org>/<filename>` (org-specific)
 2. `.github/harden-runner/<filename>` (host-wide family default)
+3. `.github/harden-runner/<org>/<filename>` when a **single** org
+   directory in the fetched tree carries the file (sole-org fallback)
 
-The first file that exists wins. Because an empty allow-list would
+The first file that exists wins. The sole-org fallback covers forks:
+a fork's `.github` repository carries the upstream org's allow-list
+at the pinned ref, but the workflow org resolves to the fork owner,
+which prevents the org-specific candidate from matching there. With
+a single org directory present the choice is unambiguous and the
+ref-pinned content is byte-identical to upstream; two or more org
+directories keep the miss (the choice would be ambiguous). Explicit
+paths never fall back.
+
+Because an empty allow-list would
 break egress under block mode, this action treats "no file found"
 as a hard error (unlike the sibling `python-audit-action`, which
 treats a default-path miss as a soft no-op).

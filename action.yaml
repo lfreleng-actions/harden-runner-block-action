@@ -127,8 +127,11 @@ outputs:
       In-repo path of the matched config file (config mode).
   matched_candidate:
     description: >
-      Which search candidate matched: org-specific, family-default or
-      explicit (config mode).
+      Which search candidate matched: org-specific, family-default,
+      sole-org-fallback or explicit (config mode). The
+      sole-org-fallback value reports that the default search chain
+      missed but exactly one org directory under the family directory
+      carried the file (the fork scenario).
 
 runs:
   using: "node24"
