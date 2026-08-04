@@ -108,16 +108,19 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                   | Required | Default                 | Description                                                                                                                                                      |
-| ---------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_list_path`      | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
-| `url`                  | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
-| `org`                  | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
-| `env_var_name`         | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
-| `config`               | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
-| `token`                | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
-| `allow_list_summary`   | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                   |
-| `disable_gh_telemetry` | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.      |
+| Name                    | Required | Default                 | Description                                                                                                                                                      |
+| ----------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_list_path`       | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
+| `url`                   | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
+| `org`                   | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
+| `env_var_name`          | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
+| `config`                | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
+| `token`                 | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
+| `allow_list_summary`    | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                   |
+| `disable_gh_telemetry`  | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.      |
+| `supplemental_config`   | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.        |
+| `supplemental_unpinned` | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                      |
+| `supplemental_required` | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                 |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -125,17 +128,20 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                | Description                                                                                                                                  |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowed_endpoints` | The sanitised, space-separated allowed-endpoints allow-list string.                                                                          |
-| `source`            | One of `path`, `url`, `default-url`, `config`.                                                                                               |
-| `resolved_url`      | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead). |
-| `resolved_host_org` | Host org that supplied the allow-list (`config` mode).                                                                                       |
-| `resolved_repo`     | Repository that supplied the allow-list (`config` mode).                                                                                     |
-| `resolved_ref`      | Git ref requested for the `config` fetch.                                                                                                    |
-| `resolved_sha`      | Exact commit SHA the `config` ref resolved to.                                                                                               |
-| `resolved_path`     | In-repo path of the matched `config` file.                                                                                                   |
-| `matched_candidate` | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                          |
+| Name                  | Description                                                                                                                                  |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_endpoints`   | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list contributed endpoints.   |
+| `source`              | One of `path`, `url`, `default-url`, `config`.                                                                                               |
+| `resolved_url`        | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead). |
+| `resolved_host_org`   | Host org that supplied the allow-list (`config` mode).                                                                                       |
+| `resolved_repo`       | Repository that supplied the allow-list (`config` mode).                                                                                     |
+| `resolved_ref`        | Git ref requested for the `config` fetch.                                                                                                    |
+| `resolved_sha`        | Exact commit SHA the `config` ref resolved to.                                                                                               |
+| `resolved_path`       | In-repo path of the matched `config` file.                                                                                                   |
+| `matched_candidate`   | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                          |
+| `supplemental_source` | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                        |
+| `supplemental_count`  | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                  |
+| `supplemental_sha`    | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                               |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -327,6 +333,116 @@ To opt out of the behaviour altogether:
       disable_gh_telemetry: false
 ```
 
+## Supplemental per-org allow-lists
+
+A single shared allow-list grants every endpoint it carries to every
+consumer. ONAP needs `registry.nordix.org:443` for its Testcontainers
+pulls; adding that to the shared baseline would hand a Nordix registry
+to Akraino, O-RAN-SC and everyone else with no use for it.
+
+`supplemental_config` names a second list, in the same grammar as
+`config`, whose endpoints are **concatenated** with the baseline rather
+than replacing it:
+
+```yaml
+    with:
+      config: 'lfreleng-actions@v0.11.1'
+      supplemental_config: 'onap//@v1.4.0'
+```
+
+The action fetches and sanitises each list separately, so a rejected
+token names the list it came from. It then merges the results and
+de-duplicates them, keeping first-seen order with the baseline first.
+
+The feature stays off unless you name a source. There is no automatic
+discovery: reading a security-relevant file nobody asked for makes a
+poor default, and naming it costs one line.
+
+> [!NOTE]
+> `supplemental_config` requires `config`. It extends the baseline, so
+> there has to be a baseline to extend, and the legacy `allow_list_path`
+> / `url` sources have no resolver for it to reuse.
+
+### Overlap between the two lists
+
+De-duplication is not tidiness; it buys a migration path. An entry can
+sit in both lists while it moves from one to the other: copy it into the
+supplemental list, confirm nothing breaks, and drop it from the shared
+baseline later. The two lists never have to change in lockstep.
+
+### Unpinned supplements stay inside one org
+
+Pinning is half of this action's trust posture. The resolver treats a
+single non-conforming token as a hard error precisely so that remote
+content cannot widen what a downstream tool accepts.
+
+Requiring a pin everywhere is nonetheless a real cost: adding one
+endpoint would mean bumping a ref in every consuming workflow.
+`supplemental_unpinned: true` lifts that, but **restricts the
+supplemental list to the workflow's own org**:
+
+<!-- markdownlint-disable MD013 -->
+
+| `supplemental_config`              | `supplemental_unpinned` | Workflow org | Result                  |
+| ---------------------------------- | ----------------------- | ------------ | ----------------------- |
+| `lfreleng-actions/.github@v0.11.1` | either                  | `onap`       | Allowed: pinned         |
+| `onap//`                           | `true`                  | `onap`       | Allowed: same org       |
+| `onap/.github//`                   | `false`                 | `onap`       | Refused: needs the flag |
+| `lfreleng-actions/.github//`       | `true`                  | `onap`       | Refused: cross-org      |
+| `onap-evil//`                      | `true`                  | `onap`       | Refused: lookalike org  |
+
+<!-- markdownlint-enable MD013 -->
+
+Cross-org and unpinned together would mean anyone able to merge to
+another org's default branch could widen the egress allow-list of your
+workflows, with no review in your repository and nothing in a pin to
+audit. For a control whose whole purpose is constraining egress, that
+inverts the threat model.
+
+Same-org grants no new trust: whoever can merge to `onap/.github` can
+already alter ONAP's workflows directly. The rule is an exact match on
+the org, not a prefix, so `onap-evil` is not `onap`.
+
+The action applies the rule twice. First to the spec, before any network
+access, which keeps a refusal cheap and names the offending input.
+Then to the coordinates the resolver reports back, before the merge
+touches a single token. That second check carries the authority, because
+it reads the org and ref the resolver actually used rather than a second
+parse of the spec.
+
+### When the supplemental list is missing
+
+The action tolerates absence by default, which is what a project that
+has not created its list yet needs: it logs the miss and continues with
+the baseline alone. Set `supplemental_required: true` where the
+supplemental carries endpoints the job genuinely cannot run without, so
+its absence fails at once rather than at the first blocked connection.
+
+### Telling the two lists apart afterwards
+
+During an incident, "which list granted this endpoint" is the first
+question, so the action reports the supplemental distinctly rather than
+folding it into the baseline's figures:
+
+```yaml
+    - name: 'Report allow-list provenance'
+      run: |
+        echo "baseline:     ${{ steps.allow.outputs.resolved_path }}"
+        echo "supplemental: ${{ steps.allow.outputs.supplemental_source }}"
+        echo "commit:       ${{ steps.allow.outputs.supplemental_sha }}"
+```
+
+The action composes `supplemental_source` from the resolved coordinates
+rather than echoing the input back: a spec such as `onap//` names a
+search chain rather than a file, so repeating it would answer none of
+the questions worth asking. The reported form follows the `config`
+grammar — `<org>/<repo>//<path>@<ref>`, subpath before ref — so it
+pastes straight back into `supplemental_config`.
+
+`supplemental_sha` matters most for an unpinned list, where it forms the
+sole audit trail: the spec names a branch, and the branch moves. The
+step summary carries the same detail in its own block.
+
 ## Allow-list file format
 
 The allow-list must consist of `host[:port]` tokens separated by
@@ -403,19 +519,20 @@ the documented `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
 `$GITHUB_STEP_SUMMARY` files and `::error::` workflow commands. No
 build pipeline, no bundling, no `dist/` directory.
 
-The pre step spans six single-purpose ES modules, which the runner
+The pre step spans seven single-purpose ES modules, which the runner
 loads directly (relative imports, no resolution step):
 
 <!-- markdownlint-disable MD013 -->
 
-| Module                     | Responsibility                                                              |
-| -------------------------- | --------------------------------------------------------------------------- |
-| `src/pre.mjs`              | Entrypoint: orchestrates the steps above and publishes outputs.             |
-| `src/inputs.mjs`           | Reads and validates inputs, resolves which source to use.                   |
-| `src/fetch.mjs`            | Size-capped HTTPS fetch (redirects, timeout) and local file read.           |
-| `src/sanitise.mjs`         | Token parsing and strict host/port validation.                              |
-| `src/config-flow.mjs`      | Drives the shared Python resolver for the `config` input.                   |
-| `src/actions-io.mjs`       | The runner protocol: workflow commands, outputs, env vars, step summary.    |
+| Module                 | Responsibility                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `src/pre.mjs`          | Entrypoint: orchestrates the steps above and publishes outputs.                      |
+| `src/inputs.mjs`       | Reads and validates inputs, resolves which source to use.                            |
+| `src/fetch.mjs`        | Size-capped HTTPS fetch (redirects, timeout) and local file read.                    |
+| `src/sanitise.mjs`     | Token parsing and strict host/port validation.                                       |
+| `src/config-flow.mjs`  | Drives the shared Python resolver for the `config` input, and merges a supplemental. |
+| `src/supplemental.mjs` | Pure helpers for the supplemental list: spec parsing, the trust rule, the merge.     |
+| `src/actions-io.mjs`   | The runner protocol: workflow commands, outputs, env vars, step summary.             |
 
 <!-- markdownlint-enable MD013 -->
 
