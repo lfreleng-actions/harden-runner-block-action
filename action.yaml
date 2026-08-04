@@ -95,6 +95,41 @@ inputs:
       strategy.job-index pattern).
     required: false
     default: "true"
+  supplemental_config:
+    description: >
+      An additional allow-list, in the same coordinate grammar as
+      'config', whose endpoints are CONCATENATED with the baseline
+      rather than replacing it. Intended for project-specific endpoints
+      that should not be granted to every consumer of the shared list.
+      Duplicates between the two are removed, keeping first-seen order,
+      so an entry can be migrated from one list to the other without
+      both changing in lockstep. Empty disables the feature; there is no
+      automatic discovery, because silently reading a security-relevant
+      file nobody asked for is a poor default. Requires 'config'.
+    required: false
+    default: ""
+  supplemental_unpinned:
+    description: >
+      Permit 'supplemental_config' to omit an '@ref' and follow the
+      default branch. Allowed ONLY when the supplemental list lives in
+      the same org as the workflow: an actor who can merge there can
+      already alter the workflow itself, so this grants no new trust.
+      A cross-org supplemental must be pinned, because otherwise anyone
+      able to merge to another org's default branch could widen the
+      egress allow-list of these workflows with no review here and
+      nothing in the pin to audit.
+    required: false
+    default: "false"
+  supplemental_required:
+    description: >
+      Whether a missing supplemental list is fatal. Defaults to false:
+      the common case is a project that has not created one yet, and
+      the baseline alone remains a valid allow-list. Set true where the
+      supplemental carries endpoints the job genuinely cannot run
+      without, so its absence fails loudly rather than at the first
+      blocked connection.
+    required: false
+    default: "false"
 
 outputs:
   allowed_endpoints:
@@ -132,6 +167,21 @@ outputs:
       sole-org-fallback value reports that the default search chain
       missed but exactly one org directory under the family directory
       carried the file (the fork scenario).
+  supplemental_source:
+    description: >
+      Where the supplemental list was read from, or empty when the
+      feature is unused or the list was absent. Reported separately
+      from 'source' so that, during an incident, the question "which
+      list granted this endpoint" has an answer.
+  supplemental_count:
+    description: >
+      Number of endpoints read from the supplemental list before
+      de-duplication against the baseline. Zero when unused or absent.
+  supplemental_sha:
+    description: >
+      Commit the supplemental list was read from. For an unpinned list
+      this is the only audit trail available, since the spec names a
+      branch and the branch moves. Empty when unused or absent.
 
 runs:
   using: "node24"
