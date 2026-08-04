@@ -71,3 +71,13 @@ jobs:
           # Stdlib-only module; pytest is the sole test dependency.
           python -m pip install --disable-pip-version-check -q pytest
           python -m pytest tests/ -q
+
+      # The supplemental allow-list helpers live in JavaScript, because
+      # merging two resolved lists is this action's concern and does not
+      # belong in the mirrored Python resolver. Named explicitly rather
+      # than pointing node at tests/, which would try to execute the
+      # Python files alongside them.
+      - name: 'Run supplemental allow-list unit tests'
+        shell: bash
+        run: |
+          node --test tests/test_supplemental.mjs

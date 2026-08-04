@@ -26,6 +26,7 @@ import * as crypto from 'node:crypto';
 import * as https from 'node:https';
 import { URL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { checkSupplementalTrust, mergeTokens } from './supplemental.mjs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 
@@ -149,6 +150,9 @@ const inputConfig = getInput('config');
 const inputToken = getInput('token');
 const inputAllowListSummary = getInput('allow_list_summary', 'true');
 const envVarName = getInput('env_var_name', 'CONNECTION_ALLOW_LIST');
+const inputSupplementalConfig = getInput('supplemental_config');
+const inputSupplementalUnpinned = getInput('supplemental_unpinned', 'false');
+const inputSupplementalRequired = getInput('supplemental_required', 'false');
 
 // 'config' is mutually exclusive with the legacy source inputs.
 if (inputConfig !== '') {
@@ -160,6 +164,24 @@ if (inputConfig !== '') {
   }
   if (/[\r\n]/.test(inputConfig)) {
     fail("Input 'config' must not contain newline characters ❌");
+  }
+}
+
+// The supplemental list extends 'config'; it is meaningless without a
+// baseline to extend, and the legacy source inputs have no resolver to
+// reuse.
+if (inputSupplementalConfig !== '' && inputConfig === '') {
+  fail("Input 'supplemental_config' requires 'config' ❌");
+}
+if (/[\r\n]/.test(inputSupplementalConfig)) {
+  fail("Input 'supplemental_config' must not contain newline characters ❌");
+}
+for (const [name, value] of [
+  ['supplemental_unpinned', inputSupplementalUnpinned],
+  ['supplemental_required', inputSupplementalRequired],
+]) {
+  if (value !== 'true' && value !== 'false') {
+    fail(`Input '${name}' must be 'true' or 'false' (received '${value}') ❌`);
   }
 }
 
@@ -412,40 +434,21 @@ function sanitise(raw) {
 // Config-mode resolution (shared Python resolver)
 // ---------------------------------------------------------------------
 
-function runConfigFlow() {
-  // Mask the token before anything else so it cannot leak into logs.
-  // Escape the value so a token containing %, CR or LF cannot break
-  // the ::add-mask:: command or inject additional workflow commands.
-  if (inputToken) {
-    console.log(`::add-mask::${escapeWorkflowCommand(inputToken)}`);
-  }
-
-  // Preflight: the shared resolver needs python3 on the runner.
-  const probe = spawnSync('python3', ['--version'], { encoding: 'utf8' });
-  if (probe.status !== 0) {
-    fail("python3 is required for the 'config' input but was not found ❌");
-  }
-
+// Invoke the shared resolver for one spec and return its parsed JSON.
+// Summary and output writing are the caller's to enable: the baseline
+// call keeps the resolver's own reporting, while the supplemental call
+// is JSON-only so it neither emits a second summary block nor clobbers
+// the baseline's step outputs.
+function resolveSpec(spec, { summaryTarget, outputTarget }) {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const script = path.join(here, 'resolve_config_source.py');
 
-  // An empty --step-summary target suppresses the summary block
-  // (e.g. matrix legs other than the first).
-  const summaryTarget = inputAllowListSummary === 'false'
-    ? ''
-    : (process.env.GITHUB_STEP_SUMMARY || '');
-
-  // The token is passed via the environment (CONFIG_TOKEN), never on
-  // the command line, so it cannot appear in a process listing. We
-  // also strip the runner-provided INPUT_TOKEN from the child
-  // environment: the resolver reads (and pops) CONFIG_TOKEN, so
-  // leaving INPUT_TOKEN in place would still leak the secret into the
-  // git subprocesses the resolver spawns.
   const childEnv = { ...process.env, CONFIG_TOKEN: inputToken };
   delete childEnv.INPUT_TOKEN;
+
   const res = spawnSync('python3', [
     script,
-    '--config', inputConfig,
+    '--config', spec,
     '--workflow-org', repoOwner,
     '--family', 'harden-runner',
     '--mode', 'endpoints',
@@ -453,7 +456,7 @@ function runConfigFlow() {
     '--content-key', 'allowed_endpoints',
     '--summary-title', '🛡️ Harden Runner Allow-list',
     '--summary-unit', 'Endpoints',
-    '--github-output', process.env.GITHUB_OUTPUT || '',
+    '--github-output', outputTarget,
     '--step-summary', summaryTarget,
     '--json-stdout',
   ], {
@@ -470,15 +473,40 @@ function runConfigFlow() {
     process.stderr.write(res.stderr);
   }
   if (res.status !== 0) {
-    fail(`Failed to resolve allow-list from config '${inputConfig}' ❌`);
+    fail(`Failed to resolve allow-list from config '${spec}' ❌`);
   }
 
-  let data;
   try {
-    data = JSON.parse(res.stdout.trim());
-  } catch (e) {
-    fail(`Could not parse config resolver output ❌`);
+    return JSON.parse(res.stdout.trim());
+  } catch {
+    fail(`Could not parse config resolver output for '${spec}' ❌`);
   }
+}
+
+function runConfigFlow() {
+  // Mask the token before anything else so it cannot leak into logs.
+  // Escape the value so a token containing %, CR or LF cannot break
+  // the ::add-mask:: command or inject additional workflow commands.
+  if (inputToken) {
+    console.log(`::add-mask::${escapeWorkflowCommand(inputToken)}`);
+  }
+
+  // Preflight: the shared resolver needs python3 on the runner.
+  const probe = spawnSync('python3', ['--version'], { encoding: 'utf8' });
+  if (probe.status !== 0) {
+    fail("python3 is required for the 'config' input but was not found ❌");
+  }
+
+  // An empty --step-summary target suppresses the summary block
+  // (e.g. matrix legs other than the first).
+  const summaryTarget = inputAllowListSummary === 'false'
+    ? ''
+    : (process.env.GITHUB_STEP_SUMMARY || '');
+
+  const data = resolveSpec(inputConfig, {
+    summaryTarget,
+    outputTarget: process.env.GITHUB_OUTPUT || '',
+  });
 
   if (!data.found) {
     // Unlike python-audit-action, an empty allow-list is fatal here:
@@ -486,12 +514,84 @@ function runConfigFlow() {
     fail(`No allow-list found via config '${inputConfig}' ❌`);
   }
 
-  const sanitised = data.tokens.join(' ');
-  // The resolver already wrote the step outputs and summary; we only
-  // need to publish the env var the downstream harden-runner pre hook
-  // consumes.
+  let tokens = data.tokens;
+  let supplementalCount = 0;
+  let supplementalSource = '';
+  let supplementalSha = '';
+
+  if (inputSupplementalConfig !== '') {
+    const trust = checkSupplementalTrust(
+      inputSupplementalConfig,
+      inputSupplementalUnpinned === 'true',
+      repoOwner,
+    );
+    if (!trust.ok) {
+      fail(`Input 'supplemental_config' rejected: ${trust.reason} ❌`);
+    }
+
+    // JSON-only: no summary block, no step outputs. The baseline call
+    // above already wrote both, and a second writer would either append
+    // a duplicate summary or overwrite allowed_endpoints with the
+    // supplemental alone.
+    const extra = resolveSpec(inputSupplementalConfig, {
+      summaryTarget: '',
+      outputTarget: '',
+    });
+
+    if (!extra.found) {
+      if (inputSupplementalRequired === 'true') {
+        fail(
+          "No allow-list found via supplemental_config " +
+          `'${inputSupplementalConfig}' ❌`,
+        );
+      }
+      info(
+        "No supplemental allow-list found via " +
+        `'${inputSupplementalConfig}'; continuing with the baseline only`,
+      );
+    } else {
+      const before = tokens.length;
+      tokens = mergeTokens(tokens, extra.tokens);
+      supplementalCount = extra.count;
+      // Composed from the resolver's own fields rather than echoing the
+      // caller's spec. A spec such as 'onap//' names a search chain, not
+      // a file, so repeating it answers none of the questions worth
+      // asking after the fact: which repository, which ref, which of the
+      // candidate paths matched. The form mirrors the config grammar, so
+      // the value can be pasted back as an explicit, pinned spec.
+      supplementalSource = extra.matched_path
+        ? `${extra.host_org}/${extra.repo}@${extra.ref || 'HEAD'}` +
+          `//${extra.matched_path}`
+        : inputSupplementalConfig;
+      supplementalSha = extra.resolved_sha || '';
+      const added = tokens.length - before;
+      info(
+        `Merged ${added} endpoint(s) from the supplemental list ` +
+        `(${supplementalCount} read, ${supplementalCount - added} already ` +
+        `in the baseline) ✅`,
+      );
+    }
+  }
+
+  const sanitised = tokens.join(' ');
+
+  // The baseline resolver call already wrote the step outputs and
+  // summary for its own list. Republish allowed_endpoints so it
+  // reflects the merged set rather than the baseline alone, and record
+  // where the supplement came from.
+  if (supplementalCount > 0) {
+    setOutput('allowed_endpoints', sanitised);
+  }
+  setOutput('supplemental_source', supplementalSource);
+  setOutput('supplemental_count', String(supplementalCount));
+  // The commit the supplemental was actually read from. For an unpinned
+  // list this is the only audit trail there is: the spec names a branch,
+  // and the branch moves.
+  setOutput('supplemental_sha', supplementalSha);
+
+  // Publish the env var the downstream harden-runner pre hook consumes.
   exportEnv(envVarName, sanitised);
-  info(`Loaded ${data.count} allow-list endpoints via config ✅`);
+  info(`Loaded ${tokens.length} allow-list endpoints via config ✅`);
 }
 
 // ---------------------------------------------------------------------
