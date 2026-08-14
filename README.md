@@ -360,6 +360,22 @@ the documented `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
 `$GITHUB_STEP_SUMMARY` files and `::error::` workflow commands. No
 build pipeline, no bundling, no `dist/` directory.
 
+The pre step spans six single-purpose ES modules, which the runner
+loads directly (relative imports, no resolution step):
+
+<!-- markdownlint-disable MD013 -->
+
+| Module                     | Responsibility                                                              |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `src/pre.mjs`              | Entrypoint: orchestrates the steps above and publishes outputs.             |
+| `src/inputs.mjs`           | Reads and validates inputs, resolves which source to use.                   |
+| `src/fetch.mjs`            | Size-capped HTTPS fetch (redirects, timeout) and local file read.           |
+| `src/sanitise.mjs`         | Token parsing and strict host/port validation.                              |
+| `src/config-flow.mjs`      | Drives the shared Python resolver for the `config` input.                   |
+| `src/actions-io.mjs`       | The runner protocol: workflow commands, outputs, env vars, step summary.    |
+
+<!-- markdownlint-enable MD013 -->
+
 ## Notes
 
 - This action needs **no** organisation secret or variable to work
