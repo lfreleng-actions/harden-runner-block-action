@@ -14,4 +14,6 @@
 // does not create any temp files (HTTPS responses are buffered in
 // memory) so there is nothing to clean up here.
 
-console.log("Allow-list loader main step: nothing more to do (pre already ran) ✅");
+import { info } from './actions-io.mjs';
+
+info('Allow-list loader main step: nothing more to do (pre already ran) ✅');
