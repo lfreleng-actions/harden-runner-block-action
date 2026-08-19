@@ -108,15 +108,16 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                 | Required | Default                 | Description                                                                                                                                                      |
-| -------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_list_path`    | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
-| `url`                | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
-| `org`                | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
-| `env_var_name`       | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
-| `config`             | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
-| `token`              | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
-| `allow_list_summary` | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                   |
+| Name                   | Required | Default                 | Description                                                                                                                                                      |
+| ---------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_list_path`      | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
+| `url`                  | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
+| `org`                  | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
+| `env_var_name`         | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
+| `config`               | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
+| `token`                | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
+| `allow_list_summary`   | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                   |
+| `disable_gh_telemetry` | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.      |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -283,6 +284,48 @@ matrix context itself, but the calling workflow can. Set
 Outside a matrix, `strategy.job-index` is empty; use
 `${{ !strategy.job-total || strategy.job-index == 0 }}` if a single
 template must cover both matrix and non-matrix jobs.
+
+### GitHub CLI telemetry
+
+The action publishes `GH_TELEMETRY=false` to later steps by default.
+The `gh` CLI otherwise posts usage events to `cafe.github.com`:
+
+```go
+// cli/cli — pkg/cmd/send-telemetry/send_telemetry.go
+const defaultTelemetryEndpointURL = "https://cafe.github.com"
+```
+
+That endpoint belongs in neither the job nor the allow-list:
+
+- No job needs it. The CLI sends telemetry from a separate hidden
+  `gh send-telemetry` subcommand on a two-second timeout, so `gh`
+  behaves the same whether the endpoint answers, gets blocked, or
+  stays disabled.
+- Under `egress-policy: block` the call surfaces as a blocked
+  connection, and that noise competes with genuine findings in the run
+  insights.
+- Allow-listing `cafe.github.com` instead would widen egress across
+  every repository sharing the list, so a whole organisation carries
+  analytics traffic to quiet one warning.
+
+`GH_TELEMETRY` takes precedence over `DO_NOT_TRACK` in the CLI, so the
+one variable covers both opt-outs.
+
+A value the caller set already wins, which keeps `GH_TELEMETRY=log`
+usable for debugging:
+
+```yaml
+    env:
+      GH_TELEMETRY: 'log'   # survives; the action leaves it alone
+```
+
+To opt out of the behaviour altogether:
+
+```yaml
+    with:
+      config: 'lfreleng-actions@main'
+      disable_gh_telemetry: false
+```
 
 ## Allow-list file format
 

@@ -95,6 +95,18 @@ inputs:
       strategy.job-index pattern).
     required: false
     default: "true"
+  disable_gh_telemetry:
+    description: >
+      Whether to publish GH_TELEMETRY=false to later steps, turning
+      off GitHub CLI telemetry for the rest of the job. The gh CLI
+      otherwise posts usage events to cafe.github.com, an endpoint no
+      CI job needs and one a block-mode egress policy denies, so every
+      job that shells out to gh reports a blocked connection that
+      competes with genuine findings. A value the caller set already
+      wins, so 'GH_TELEMETRY=log' for debugging survives. Set to
+      'false' to leave the environment untouched.
+    required: false
+    default: "true"
 
 outputs:
   allowed_endpoints:

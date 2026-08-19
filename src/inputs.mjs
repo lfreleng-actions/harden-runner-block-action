@@ -51,6 +51,8 @@ export function readInputs() {
     config: getInput('config'),
     token: getInput('token'),
     summary: getInput('allow_list_summary', 'true') !== 'false',
+    disableGhTelemetry:
+      getInput('disable_gh_telemetry', 'true') !== 'false',
     envVarName: getInput('env_var_name', 'CONNECTION_ALLOW_LIST'),
     workflowOrg: process.env.GITHUB_REPOSITORY_OWNER || '',
   };

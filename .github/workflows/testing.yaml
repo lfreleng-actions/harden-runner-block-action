@@ -792,3 +792,156 @@ jobs:
           done
           count=$(printf '%s' "$single_value" | wc -w | tr -d ' ')
           echo "Both formats published an identical $count-endpoint list ✅"
+
+  ### GH_TELEMETRY policy. Asserts that the default publishes
+  ### GH_TELEMETRY=false, that a caller's own value survives (including
+  ### an explicitly empty one, which the CLI counts as falsey), and that
+  ### disable_gh_telemetry=false leaves the environment untouched.
+  ###
+  ### Coverage note: the default-publishing case runs through config
+  ### mode as well, because that flow returns early and once skipped the
+  ### policy entirely. The caller-precedence and opt-out cases run
+  ### through the local-file flow alone -- the policy runs ahead of the
+  ### source branch, so those decisions cannot differ between flows.
+  test-gh-telemetry-policy:
+    name: "GH_TELEMETRY policy"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Stage local allow-list file"
+        id: stage
+        shell: bash
+        run: |
+          # Stage local allow-list file
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/gh-telemetry-allow-list.txt"
+          printf '%s\n' 'github.com:443' > "$al_file"
+          echo "al_file=$al_file" >> "$GITHUB_OUTPUT"
+
+      - name: "Default publishes GH_TELEMETRY=false"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+        run: |
+          # Default publishes GH_TELEMETRY=false
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/env_default"
+          : > "$captured_env"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/out_default" \
+          GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/sum_default" \
+            node src/pre.mjs
+          if ! grep -q '^GH_TELEMETRY=false$' "$captured_env"; then
+            echo "Error: GH_TELEMETRY=false not published by default ❌"
+            cat "$captured_env"
+            exit 1
+          fi
+          echo "Default case passed ✅"
+
+      - name: "Config mode publishes it too"
+        shell: bash
+        env:
+          INPUT_CONFIG: 'lfreleng-actions@main'
+        run: |
+          # Config mode publishes it too
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/env_config"
+          : > "$captured_env"
+          # The policy applies before the config branch returns, so this
+          # asserts ordering rather than config resolution -- which
+          # test-config-mode already covers. Tolerate a resolution
+          # failure so the two tests stay independent.
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/out_config" \
+          GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/sum_config" \
+            node src/pre.mjs || true
+          if ! grep -q '^GH_TELEMETRY=false$' "$captured_env"; then
+            echo "Error: config flow skipped the telemetry policy ❌"
+            cat "$captured_env"
+            exit 1
+          fi
+          echo "Config-mode case passed ✅"
+
+      - name: "A caller's own value survives"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+          GH_TELEMETRY: 'log'
+        run: |
+          # A caller's own value survives
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/env_caller"
+          : > "$captured_env"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/out_caller" \
+          GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/sum_caller" \
+            node src/pre.mjs
+          if grep -q '^GH_TELEMETRY=' "$captured_env"; then
+            echo "Error: clobbered a caller-supplied GH_TELEMETRY ❌"
+            cat "$captured_env"
+            exit 1
+          fi
+          echo "Caller-precedence case passed ✅"
+
+      - name: "A caller's empty value survives"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+          GH_TELEMETRY: ''
+        run: |
+          # A caller's empty value survives
+          set -euo pipefail
+          # Precondition: an empty value must reach the step as a SET
+          # variable, otherwise this case proves nothing.
+          if [ -z "${GH_TELEMETRY+x}" ]; then
+            echo "Error: runner did not export an empty GH_TELEMETRY ❌"
+            exit 1
+          fi
+          captured_env="${RUNNER_TEMP}/env_empty"
+          : > "$captured_env"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/out_empty" \
+          GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/sum_empty" \
+            node src/pre.mjs
+          # The CLI's falsey list includes the empty string, so an empty
+          # value is a deliberate opt-out the action must not overwrite.
+          if grep -q '^GH_TELEMETRY=' "$captured_env"; then
+            echo "Error: overwrote a caller-supplied empty GH_TELEMETRY ❌"
+            cat "$captured_env"
+            exit 1
+          fi
+          echo "Empty-value case passed ✅"
+
+      - name: "Opt-out leaves the environment untouched"
+        shell: bash
+        env:
+          INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
+          INPUT_DISABLE_GH_TELEMETRY: 'false'
+        run: |
+          # Opt-out leaves the environment untouched
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/env_optout"
+          : > "$captured_env"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/out_optout" \
+          GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/sum_optout" \
+            node src/pre.mjs
+          if grep -q '^GH_TELEMETRY=' "$captured_env"; then
+            echo "Error: disable_gh_telemetry=false still published it ❌"
+            cat "$captured_env"
+            exit 1
+          fi
+          # The allow-list itself must still load.
+          if ! grep -q '^CONNECTION_ALLOW_LIST=github\.com:443$' \
+                 "$captured_env"; then
+            echo "Error: opt-out broke the allow-list export ❌"
+            exit 1
+          fi
+          echo "Opt-out case passed ✅"
