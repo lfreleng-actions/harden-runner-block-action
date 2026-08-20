@@ -258,6 +258,485 @@ jobs:
           fi
           echo "Config-mode assertions passed ($count endpoints) ✅"
 
+  ### Unit tests for the supplemental helpers.
+  ###
+  ### These live here rather than in resolver-tests.yaml, which is
+  ### path-filtered to the mirrored Python resolver and its suites. A
+  ### step added there would not run for a pull request touching only
+  ### src/supplemental.mjs or this file's tests -- that is, for exactly
+  ### the changes these tests exist to catch. testing.yaml carries no
+  ### path filter, and the helpers are action code rather than resolver
+  ### code, so this is also where they belong.
+  test-supplemental-units:
+    name: "Supplemental: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Named explicitly rather than pointing node at tests/, which
+      # would try to execute the mirrored Python suite alongside it.
+      - name: "Run supplemental allow-list unit tests"
+        shell: bash
+        run: |
+          # Trust rule, coordinate round-trip and merge semantics
+          node --test tests/test_supplemental.mjs
+
+  ### Supplemental allow-list: a real, two-fetch merge.
+  ###
+  ### Both specs name the same shared list at two immutable commit
+  ### SHAs, chosen because the later one is a strict superset of the
+  ### earlier by exactly three endpoints -- among them
+  ### registry.nordix.org:443, the endpoint that motivated the feature.
+  ### Every assertion below is therefore exact rather than approximate,
+  ### and the two SHAs also let the test prove the second resolver
+  ### invocation did not overwrite the first one's outputs.
+  ###
+  ### Neither step sets GITHUB_REPOSITORY_OWNER: the runner owns that
+  ### variable and a step's env: cannot repurpose it. Nothing here needs
+  ### to. Both specs name their org explicitly, and the org-specific
+  ### search candidate resolves to the same file on a fork through the
+  ### sole-org fallback, so the counts hold either way.
+  test-supplemental-merge:
+    name: "Supplemental: merge two resolved lists"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run pre.mjs with a supplemental list"
+        shell: bash
+        env:
+          # 2026-07-29: 168 endpoints.
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          # 2026-08-04: the same file, three endpoints later.
+          # yamllint disable-line rule:line-length
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions@7409b5aad828768b12d015848ee2a4d4dbf34610"
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # Merge a supplemental allow-list into the baseline
+          set -euo pipefail
+          base_sha="886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          supp_sha="7409b5aad828768b12d015848ee2a4d4dbf34610"
+          list_path=".github/harden-runner/lfreleng-actions/allow_list.txt"
+          captured_env="${RUNNER_TEMP}/sup_env"
+          captured_out="${RUNNER_TEMP}/sup_out"
+          captured_sum="${RUNNER_TEMP}/sup_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          # The merged list is the union: 168 + 3.
+          value=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//')
+          count=$(printf '%s' "$value" | wc -w | tr -d ' ')
+          if [ "$count" -ne 171 ]; then
+            echo "Error: expected 171 merged endpoints, got $count ❌"
+            exit 1
+          fi
+          # The motivating endpoint: present only in the supplemental.
+          case " $value " in
+            *" registry.nordix.org:443 "*) ;;
+            *)
+              echo "Error: supplemental endpoint absent from merge ❌"
+              exit 1
+              ;;
+          esac
+
+          # The supplemental is reported distinctly, as a coordinate
+          # that names the file rather than echoing the input spec.
+          # Subpath before ref, matching the config grammar, so the
+          # value pastes back into supplemental_config unchanged.
+          expected="lfreleng-actions/.github//${list_path}@${supp_sha}"
+          if ! grep -qxF "supplemental_source=${expected}" "$captured_out"
+          then
+            echo "Error: supplemental_source != ${expected} ❌"
+            grep '^supplemental' "$captured_out" || true
+            exit 1
+          fi
+          if ! grep -qxF "supplemental_sha=${supp_sha}" "$captured_out"; then
+            echo "Error: supplemental_sha != ${supp_sha} ❌"
+            exit 1
+          fi
+          if ! grep -qxF 'supplemental_count=171' "$captured_out"; then
+            echo "Error: supplemental_count != 171 ❌"
+            exit 1
+          fi
+
+          # The second resolver invocation writes no step outputs, so
+          # the baseline's resolved_* values must survive untouched.
+          if ! grep -qxF "resolved_sha=${base_sha}" "$captured_out"; then
+            echo "Error: baseline resolved_sha overwritten ❌"
+            grep '^resolved_' "$captured_out" || true
+            exit 1
+          fi
+          if grep -qF "resolved_sha=${supp_sha}" "$captured_out"; then
+            echo "Error: supplemental clobbered resolved_sha ❌"
+            exit 1
+          fi
+          # allowed_endpoints and count are re-published so they
+          # describe the merged set; GITHUB_OUTPUT is read in order, so
+          # assert on the effective (last) value of each.
+          if [ "$(grep '^count=' "$captured_out" | tail -1)" != 'count=171' ]
+          then
+            echo "Error: effective count output != 171 ❌"
+            grep '^count=' "$captured_out" || true
+            exit 1
+          fi
+          merged=$(grep '^allowed_endpoints=' "$captured_out" | tail -1 \
+            | sed 's/^allowed_endpoints=//' | wc -w | tr -d ' ')
+          if [ "$merged" -ne 171 ]; then
+            echo "Error: effective allowed_endpoints has $merged ❌"
+            exit 1
+          fi
+
+          # Exactly one baseline summary block, plus one supplemental
+          # block: the second invocation must not duplicate the first.
+          heading='^### 🛡️ Harden Runner Allow-list$'
+          blocks=$(grep -c "$heading" "$captured_sum" || true)
+          if [ "$blocks" -ne 1 ]; then
+            echo "Error: expected 1 baseline summary block, got $blocks ❌"
+            cat "$captured_sum"
+            exit 1
+          fi
+          if ! grep -qF 'Allow-list (supplemental)' "$captured_sum"; then
+            echo "Error: supplemental summary block missing ❌"
+            cat "$captured_sum"
+            exit 1
+          fi
+          if ! grep -qF 'Endpoints after merge: **171**' "$captured_sum"
+          then
+            echo "Error: supplemental summary total wrong ❌"
+            cat "$captured_sum"
+            exit 1
+          fi
+          if ! grep -qF 'Merged: **3** new, **168** already in the baseline' \
+            "$captured_sum"
+          then
+            echo "Error: supplemental summary merge figures wrong ❌"
+            cat "$captured_sum"
+            exit 1
+          fi
+          echo "Supplemental merge assertions passed (171 endpoints) ✅"
+
+      # The same two lists the other way round, which is the migration
+      # path the de-duplication exists to support: an entry sits in both
+      # while it moves from one to the other. It also disambiguates
+      # supplemental_count, which in the step above happens to equal the
+      # merged total because the supplemental was a superset. Here the
+      # two differ, so the output can only mean "read from the
+      # supplemental".
+      - name: "Run pre.mjs with a fully-overlapping supplemental"
+        shell: bash
+        env:
+          # 2026-08-04: 171 endpoints.
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@7409b5aad828768b12d015848ee2a4d4dbf34610"
+          # 2026-07-29: 168 of those same endpoints, and nothing new.
+          # yamllint disable-line rule:line-length
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # A supplemental that adds nothing must change nothing
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/ovl_env"
+          captured_out="${RUNNER_TEMP}/ovl_out"
+          captured_sum="${RUNNER_TEMP}/ovl_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          count=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//' | wc -w | tr -d ' ')
+          if [ "$count" -ne 171 ]; then
+            echo "Error: expected the 171-endpoint baseline, got $count ❌"
+            exit 1
+          fi
+          # 168 read from the supplemental, against a merged total of
+          # 171: the two figures are deliberately different here.
+          if ! grep -qxF 'supplemental_count=168' "$captured_out"; then
+            echo "Error: supplemental_count != 168 ❌"
+            grep '^supplemental' "$captured_out" || true
+            exit 1
+          fi
+          # Nothing was added, so nothing needed re-publishing: 'count'
+          # must appear exactly once, from the baseline resolver.
+          emitted=$(grep -c '^count=' "$captured_out" || true)
+          if [ "$emitted" -ne 1 ]; then
+            echo "Error: count re-published $emitted times, expected 1 ❌"
+            exit 1
+          fi
+          if ! grep -qxF 'count=171' "$captured_out"; then
+            echo "Error: count output != 171 ❌"
+            exit 1
+          fi
+          want='Merged: **0** new, **168** already in the baseline'
+          if ! grep -qF "$want" "$captured_sum"; then
+            echo "Error: supplemental summary overlap wording wrong ❌"
+            cat "$captured_sum"
+            exit 1
+          fi
+          echo "Full-overlap assertions passed (nothing added) ✅"
+
+  ### Supplemental allow-list: the refusals and the tolerated miss.
+  ###
+  ### The trust rule is the whole reason an unpinned supplemental is
+  ### safe to offer at all, so each way of getting past it has a test.
+  ###
+  ### None of these steps sets GITHUB_REPOSITORY_OWNER. The runner owns
+  ### that variable and a step's env: cannot repurpose it, so a job that
+  ### tried to pose as another org would silently test nothing: the
+  ### spec would be same-org after all, and the merge would succeed.
+  ### The cross-org cases below therefore name an org that is never the
+  ### workflow org, which holds on this repository and on any fork.
+  test-supplemental-trust:
+    name: "Supplemental: trust rule and missing list"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Refused before any network access: the baseline is never
+      # fetched either, so this costs one node startup.
+      - name: "Unpinned cross-org supplemental (must fail)"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_SUPPLEMENTAL_CONFIG: "onap//"
+          INPUT_SUPPLEMENTAL_UNPINNED: "true"
+        run: |
+          # An unpinned supplemental from another org must be refused
+          set -uo pipefail
+          : > "${RUNNER_TEMP}/x_env" ; : > "${RUNNER_TEMP}/x_out"
+          set +e
+          GITHUB_ENV="${RUNNER_TEMP}/x_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/x_out" \
+            node src/pre.mjs 2> "${RUNNER_TEMP}/x_err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: expected non-zero exit for cross-org unpinned ❌"
+            exit 1
+          fi
+          if ! grep -q 'permitted only within' "${RUNNER_TEMP}/x_err"; then
+            echo "Error: missing cross-org refusal message ❌"
+            cat "${RUNNER_TEMP}/x_err"
+            exit 1
+          fi
+          echo "Cross-org unpinned refusal passed (exit ${rc}) ✅"
+
+      # Regression test. The resolver strips a trailing ' #...' comment
+      # before splitting on '@'. A spec parser here that did not would
+      # read 'example.com' as a ref, call this pinned, and wave an
+      # unpinned cross-org list straight past the rule above. Note that
+      # such a misparse fails with a different message, so the grep
+      # below genuinely discriminates between the two behaviours.
+      - name: "Comment-disguised unpinned supplemental (must fail)"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_SUPPLEMENTAL_CONFIG: "onap//  # rotated by ops@example.com"
+          INPUT_SUPPLEMENTAL_UNPINNED: "true"
+        run: |
+          # A trailing comment must not be mistaken for a pinned ref
+          set -uo pipefail
+          : > "${RUNNER_TEMP}/c_env" ; : > "${RUNNER_TEMP}/c_out"
+          set +e
+          GITHUB_ENV="${RUNNER_TEMP}/c_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/c_out" \
+            node src/pre.mjs 2> "${RUNNER_TEMP}/c_err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: a comment bought trust it should not have ❌"
+            exit 1
+          fi
+          if ! grep -q 'permitted only within' "${RUNNER_TEMP}/c_err"; then
+            echo "Error: missing cross-org refusal message ❌"
+            cat "${RUNNER_TEMP}/c_err"
+            exit 1
+          fi
+          echo "Comment-disguise refusal passed (exit ${rc}) ✅"
+
+      # Without the flag, a ref-less supplemental is refused before the
+      # org is even considered, so this reports the missing flag rather
+      # than the org mismatch whichever repository runs it.
+      - name: "Unpinned supplemental without the flag (must fail)"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions//"
+        run: |
+          # A ref-less supplemental needs supplemental_unpinned
+          set -uo pipefail
+          : > "${RUNNER_TEMP}/f_env" ; : > "${RUNNER_TEMP}/f_out"
+          set +e
+          GITHUB_ENV="${RUNNER_TEMP}/f_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/f_out" \
+            node src/pre.mjs 2> "${RUNNER_TEMP}/f_err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: expected non-zero exit without the flag ❌"
+            exit 1
+          fi
+          if ! grep -q "no '@ref'" "${RUNNER_TEMP}/f_err"; then
+            echo "Error: missing unpinned refusal message ❌"
+            cat "${RUNNER_TEMP}/f_err"
+            exit 1
+          fi
+          echo "Unpinned-without-flag refusal passed (exit ${rc}) ✅"
+
+      - name: "Supplemental without config (must fail)"
+        shell: bash
+        env:
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions@v0.11.1"
+        run: |
+          # supplemental_config has no meaning without a baseline
+          set -uo pipefail
+          : > "${RUNNER_TEMP}/n_env" ; : > "${RUNNER_TEMP}/n_out"
+          set +e
+          GITHUB_ENV="${RUNNER_TEMP}/n_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/n_out" \
+            node src/pre.mjs 2> "${RUNNER_TEMP}/n_err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: expected non-zero exit without config ❌"
+            exit 1
+          fi
+          if ! grep -q "requires 'config'" "${RUNNER_TEMP}/n_err"; then
+            echo "Error: missing 'requires config' message ❌"
+            cat "${RUNNER_TEMP}/n_err"
+            exit 1
+          fi
+          echo "Supplemental-requires-config assertion passed ✅"
+
+      # Neither lenient reading of a boolean is safe for a flag that
+      # governs which remote content is trusted, so a value that is
+      # neither 'true' nor 'false' is refused outright.
+      - name: "Non-boolean supplemental_unpinned (must fail)"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions//"
+          INPUT_SUPPLEMENTAL_UNPINNED: "yes"
+        run: |
+          # A near-miss boolean must not be read as permission
+          set -uo pipefail
+          : > "${RUNNER_TEMP}/b_env" ; : > "${RUNNER_TEMP}/b_out"
+          set +e
+          GITHUB_ENV="${RUNNER_TEMP}/b_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/b_out" \
+            node src/pre.mjs 2> "${RUNNER_TEMP}/b_err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: expected non-zero exit for 'yes' ❌"
+            exit 1
+          fi
+          if ! grep -q "must be 'true' or 'false'" "${RUNNER_TEMP}/b_err"
+          then
+            echo "Error: missing boolean validation message ❌"
+            cat "${RUNNER_TEMP}/b_err"
+            exit 1
+          fi
+          echo "Boolean validation assertion passed (exit ${rc}) ✅"
+
+      # The common case for a project that has not created its list
+      # yet: log the miss and carry on with the baseline alone.
+      - name: "Absent supplemental is tolerated by default"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          # yamllint disable-line rule:line-length
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions//absent_list_for_tests.txt@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+        run: |
+          # A missing supplemental leaves the baseline usable
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/m_env"
+          captured_out="${RUNNER_TEMP}/m_out"
+          : > "$captured_env" ; : > "$captured_out"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+            node src/pre.mjs
+
+          count=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//' | wc -w | tr -d ' ')
+          if [ "$count" -ne 168 ]; then
+            echo "Error: expected the 168-endpoint baseline, got $count ❌"
+            exit 1
+          fi
+          if ! grep -qxF 'supplemental_count=0' "$captured_out"; then
+            echo "Error: supplemental_count != 0 for an absent list ❌"
+            exit 1
+          fi
+          if ! grep -qxF 'supplemental_source=' "$captured_out"; then
+            echo "Error: supplemental_source not empty for an absent list ❌"
+            exit 1
+          fi
+          echo "Absent-supplemental tolerance assertion passed ✅"
+
+      - name: "Absent supplemental is fatal when required"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          # yamllint disable-line rule:line-length
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions//absent_list_for_tests.txt@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_SUPPLEMENTAL_REQUIRED: "true"
+        run: |
+          # supplemental_required turns the same miss into a failure
+          set -uo pipefail
+          err="${RUNNER_TEMP}/r_err"
+          : > "${RUNNER_TEMP}/r_env" ; : > "${RUNNER_TEMP}/r_out"
+          set +e
+          GITHUB_ENV="${RUNNER_TEMP}/r_env" \
+          GITHUB_OUTPUT="${RUNNER_TEMP}/r_out" \
+            node src/pre.mjs 2> "$err"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Error: expected non-zero exit when required ❌"
+            exit 1
+          fi
+          if ! grep -q 'No allow-list found via supplemental_config' "$err"
+          then
+            echo "Error: missing required-supplemental message ❌"
+            cat "$err"
+            exit 1
+          fi
+          echo "Required-supplemental assertion passed (exit ${rc}) ✅"
+
   ### Config mutual-exclusion. Asserts that combining 'config' with a
   ### legacy source input (org) fails fast with a clear error, so the
   ### precedence rule cannot silently regress.

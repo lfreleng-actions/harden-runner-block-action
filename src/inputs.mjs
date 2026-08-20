@@ -4,6 +4,7 @@
 // Input parsing, validation and allow-list source resolution.
 
 import { fail, getInput, info, redactUrl } from './actions-io.mjs';
+import { checkSupplementalTrust } from './supplemental.mjs';
 
 // GitHub usernames/org names are 1–39 characters, alphanumerics and
 // hyphens, must not start or end with a hyphen, and must not contain
@@ -17,6 +18,23 @@ function rejectNewlines(name, value) {
   if (/[\r\n]/.test(value)) {
     fail(`Input '${name}' must not contain newline characters ❌`);
   }
+}
+
+// Parse a boolean input strictly, rejecting anything that is neither
+// 'true' nor 'false'.
+//
+// Deliberately stricter than the `!== 'false'` treatment the display
+// inputs get. These two flags govern which remote content is trusted,
+// and both lenient readings fail badly: `!== 'false'` would read a
+// typo such as 'yes' as permission to follow another org's branch,
+// while `=== 'true'` would silently ignore the caller's intent and
+// leave supplemental_required doing nothing. Refusing the value says
+// so instead.
+function strictBool(name, value) {
+  if (value !== 'true' && value !== 'false') {
+    fail(`Input '${name}' must be 'true' or 'false' (received '${value}') ❌`);
+  }
+  return value === 'true';
 }
 
 // Newlines in these inputs would let a caller inject additional
@@ -35,6 +53,30 @@ function validate(inputs) {
   rejectNewlines('allow_list_path', inputs.path);
   rejectNewlines('url', inputs.url);
 
+  // The supplemental list extends 'config'; it is meaningless without a
+  // baseline to extend, and the legacy path/url sources have no
+  // resolver for it to reuse.
+  if (inputs.supplementalConfig !== '') {
+    if (inputs.config === '') {
+      fail("Input 'supplemental_config' requires 'config' ❌");
+    }
+    rejectNewlines('supplemental_config', inputs.supplementalConfig);
+
+    // Checked here, with the other input refusals, so an untrusted
+    // supplemental costs no network access at all: the baseline is not
+    // fetched either. config-flow.mjs re-applies the same rule to the
+    // coordinates the resolver reports back, which is the authoritative
+    // check; this one exists to fail fast and name the offending input.
+    const trust = checkSupplementalTrust(
+      inputs.supplementalConfig,
+      inputs.supplementalUnpinned,
+      inputs.workflowOrg,
+    );
+    if (!trust.ok) {
+      fail(`Input 'supplemental_config' rejected: ${trust.reason} ❌`);
+    }
+  }
+
   if (!ENV_VAR_NAME_RE.test(inputs.envVarName)) {
     fail(
       `Invalid env_var_name '${inputs.envVarName}' ` +
@@ -50,6 +92,15 @@ export function readInputs() {
     org: getInput('org'),
     config: getInput('config'),
     token: getInput('token'),
+    supplementalConfig: getInput('supplemental_config'),
+    supplementalUnpinned: strictBool(
+      'supplemental_unpinned',
+      getInput('supplemental_unpinned', 'false'),
+    ),
+    supplementalRequired: strictBool(
+      'supplemental_required',
+      getInput('supplemental_required', 'false'),
+    ),
     summary: getInput('allow_list_summary', 'true') !== 'false',
     disableGhTelemetry:
       getInput('disable_gh_telemetry', 'true') !== 'false',

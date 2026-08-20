@@ -107,12 +107,49 @@ inputs:
       'false' to leave the environment untouched.
     required: false
     default: "true"
+  supplemental_config:
+    description: >
+      An additional allow-list, in the same coordinate grammar as
+      'config', whose endpoints are CONCATENATED with the baseline
+      rather than replacing it. Intended for project-specific endpoints
+      that should not be granted to every consumer of the shared list.
+      Duplicates between the two are removed, keeping first-seen order,
+      so an entry can be migrated from one list to the other without
+      both changing in lockstep. Empty disables the feature; there is no
+      automatic discovery, because silently reading a security-relevant
+      file nobody asked for is a poor default. Requires 'config'.
+    required: false
+    default: ""
+  supplemental_unpinned:
+    description: >
+      Permit 'supplemental_config' to omit an '@ref' and follow the
+      default branch. Allowed ONLY when the supplemental list lives in
+      the same org as the workflow: an actor who can merge there can
+      already alter the workflow itself, so this grants no new trust.
+      A cross-org supplemental must be pinned, because otherwise anyone
+      able to merge to another org's default branch could widen the
+      egress allow-list of these workflows with no review here and
+      nothing in the pin to audit.
+    required: false
+    default: "false"
+  supplemental_required:
+    description: >
+      Whether a missing supplemental list is fatal. Defaults to false:
+      the common case is a project that has not created one yet, and
+      the baseline alone remains a valid allow-list. Set true where the
+      supplemental carries endpoints the job genuinely cannot run
+      without, so its absence fails loudly rather than at the first
+      blocked connection.
+    required: false
+    default: "false"
 
 outputs:
   allowed_endpoints:
     description: >
       The sanitised, space-separated allowed-endpoints allow-list
-      string.
+      string. When 'supplemental_config' contributed endpoints, this is
+      the merged, de-duplicated set rather than the baseline alone, so
+      it always describes what the job actually allows.
   source:
     description: >
       The source from which the action loaded the allow-list: 'path',
@@ -144,6 +181,27 @@ outputs:
       sole-org-fallback value reports that the default search chain
       missed but exactly one org directory under the family directory
       carried the file (the fork scenario).
+  supplemental_source:
+    description: >
+      Where the supplemental list was read from, as an explicit,
+      pinnable 'config' coordinate of the form
+      '<org>/<repo>//<path>@<ref>'. Composed from the resolved
+      coordinates rather than echoing the input, because a spec such as
+      'onap//' names a search chain rather than a file. Reported
+      separately from 'source' so that, during an incident, the
+      question "which list granted this endpoint" has an answer. Empty
+      when the feature is unused or the list was absent.
+  supplemental_count:
+    description: >
+      Number of endpoints read from the supplemental list, before
+      de-duplication against the baseline. Zero when the list was
+      absent; empty when the feature is unused.
+  supplemental_sha:
+    description: >
+      Commit the supplemental list was read from. For an unpinned list
+      this is the only audit trail available, since the spec names a
+      branch and the branch moves. Empty when the feature is unused or
+      the list was absent.
 
 runs:
   using: "node24"
