@@ -186,6 +186,63 @@ function summariseSupplemental({ spec, extra, merge, total }) {
   stepSummary(lines.join('\n'));
 }
 
+// Resolve the supplemental list, merge it into the baseline tokens and
+// report the result. Returns the tokens the job should enforce, which
+// are the baseline unchanged when no supplemental list was found.
+function applySupplemental(inputs, baseline) {
+  const { supplementalConfig: spec, summary } = inputs;
+
+  const extra = resolveSupplemental(inputs);
+  let tokens = baseline;
+  let merge = null;
+
+  if (extra) {
+    merge = mergeAllowLists(tokens, extra.tokens);
+    tokens = merge.tokens;
+    info(
+      `Merged ${merge.added} endpoint(s) from the supplemental list ` +
+      `(${merge.supplementalUnique} distinct read, ${merge.overlap} ` +
+      'already in the baseline) ✅',
+    );
+    if (merge.baselineDuplicates > 0) {
+      info(
+        `Collapsed ${merge.baselineDuplicates} duplicate entr(y/ies) ` +
+        'within the baseline list ℹ️',
+      );
+    }
+
+    // The baseline call already wrote allowed_endpoints and count for
+    // its own list. Publish both again so they describe what is
+    // actually enforced: GITHUB_OUTPUT is read in order, so the later
+    // line for a key wins, exactly as calling setOutput twice does.
+    // Leaving count behind would be worse than cosmetic, given these
+    // outputs exist to answer "what did this job allow".
+    //
+    // The condition tests both ways the merged list can differ from
+    // what the resolver published. Testing only 'added > 0' would miss
+    // a baseline that carried duplicates, whose collapse changes the
+    // list without adding to it.
+    if (merge.added > 0 || merge.baselineDuplicates > 0) {
+      setOutput('allowed_endpoints', tokens.join(' '));
+      setOutput('count', String(tokens.length));
+    }
+  }
+
+  // Reported separately from the baseline's own outputs so that, during
+  // an incident, "which list granted this endpoint" has an answer.
+  setOutput('supplemental_source', extra ? describeSource(extra) : '');
+  setOutput('supplemental_count', String(extra ? extra.count : 0));
+  // For an unpinned list the commit is the only audit trail there is:
+  // the spec names a branch, and the branch moves.
+  setOutput('supplemental_sha', extra ? (extra.resolved_sha || '') : '');
+
+  if (summary) {
+    summariseSupplemental({ spec, extra, merge, total: tokens.length });
+  }
+
+  return tokens;
+}
+
 export function runConfigFlow(inputs) {
   const { config, token, workflowOrg, envVarName, summary } = inputs;
 
@@ -218,58 +275,7 @@ export function runConfigFlow(inputs) {
   let tokens = data.tokens;
 
   if (inputs.supplementalConfig !== '') {
-    const extra = resolveSupplemental(inputs);
-    let merge = null;
-
-    if (extra) {
-      merge = mergeAllowLists(tokens, extra.tokens);
-      tokens = merge.tokens;
-      info(
-        `Merged ${merge.added} endpoint(s) from the supplemental list ` +
-        `(${merge.supplementalUnique} distinct read, ${merge.overlap} ` +
-        'already in the baseline) ✅',
-      );
-      if (merge.baselineDuplicates > 0) {
-        info(
-          `Collapsed ${merge.baselineDuplicates} duplicate entr(y/ies) ` +
-          'within the baseline list ℹ️',
-        );
-      }
-
-      // The baseline call already wrote allowed_endpoints and count for
-      // its own list. Publish both again so they describe what is
-      // actually enforced: GITHUB_OUTPUT is read in order, so the later
-      // line for a key wins, exactly as calling setOutput twice does.
-      // Leaving count behind would be worse than cosmetic, given these
-      // outputs exist to answer "what did this job allow".
-      //
-      // The condition tests both ways the merged list can differ from
-      // what the resolver published. Testing only 'added > 0' would miss
-      // a baseline that carried duplicates, whose collapse changes the
-      // list without adding to it.
-      if (merge.added > 0 || merge.baselineDuplicates > 0) {
-        setOutput('allowed_endpoints', tokens.join(' '));
-        setOutput('count', String(tokens.length));
-      }
-    }
-
-    // Reported separately from the baseline's own outputs so that,
-    // during an incident, "which list granted this endpoint" has an
-    // answer.
-    setOutput('supplemental_source', extra ? describeSource(extra) : '');
-    setOutput('supplemental_count', String(extra ? extra.count : 0));
-    // For an unpinned list the commit is the only audit trail there is:
-    // the spec names a branch, and the branch moves.
-    setOutput('supplemental_sha', extra ? (extra.resolved_sha || '') : '');
-
-    if (summary) {
-      summariseSupplemental({
-        spec: inputs.supplementalConfig,
-        extra,
-        merge,
-        total: tokens.length,
-      });
-    }
+    tokens = applySupplemental(inputs, tokens);
   }
 
   // The resolver already wrote the step outputs and summary; we only
