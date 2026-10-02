@@ -17,8 +17,6 @@
 # resulting token list (and the space-joined string harden-runner
 # consumes) is byte-for-byte identical.
 
-# pyright: basic, reportMissingImports=false
-
 import os
 import sys
 
