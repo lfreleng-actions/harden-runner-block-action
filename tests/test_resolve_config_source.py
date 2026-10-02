@@ -18,8 +18,6 @@
 # tests never touch the network). The resolver-tests.yaml workflow runs
 # this file.
 
-# pyright: basic, reportMissingImports=false
-
 import os
 import sys
 

@@ -4,8 +4,14 @@
 
 ci:
   autofix_prs: false
-  # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter
-  skip: [gha-workflow-linter]
+  skip:
+    # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter
+    - gha-workflow-linter
+    # basedpyright needs typing modules (the tests import pytest), and any
+    # additional_dependencies exceed pre-commit.ci's 250 MiB per-hook
+    # limit: the bare hook alone is 248.7 MiB. No workflow runs it either,
+    # so only local commits enforce it.
+    - basedpyright
   autofix_commit_msg: |
     Chore: pre-commit autofixes
 
@@ -56,10 +62,8 @@ repos:
     rev: a56c0b927e6465d37cae3e97d35d4d18ab2b96cd  # frozen: v0.16.9
     hooks:
       - id: ruff
-        files: ^(src|scripts|tests|custom_components)/.+\.py$
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
-        files: ^(src|scripts|tests|custom_components)/.+\.py$
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: 7ff8d35ae36a7d2b968f2f90b4c723e292e594ee  # frozen: v2.3.1
@@ -109,6 +113,18 @@ repos:
     rev: 706e6acebe9e88c2c28d1527d3085a14b11794c4  # frozen: 1.40.1
     hooks:
       - id: basedpyright
+        # Fail on warnings as well as errors, over the same directories as
+        # [tool.basedpyright] include in pyproject.toml.
+        args: [--warnings, src, tests]
+        # Scan those directories whole, so a staged change cannot hide a
+        # finding it causes in an unstaged file.
+        pass_filenames: false
+        # Run even when no Python is staged: deletions and config changes.
+        always_run: true
+        # Keep always_run from also firing the hook at commit-msg.
+        stages: [pre-commit]
+        # The tests import pytest (it ships its own type information).
+        additional_dependencies: ["pytest"]
 
   - repo: https://github.com/lfreleng-actions/gha-workflow-linter
     rev: 0c582e431022f1c7004196fb4ea32744d1fe4843  # frozen: v1.7.0

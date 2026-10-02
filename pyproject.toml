@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Tool configuration only. This is a Node.js action, not a Python
+# package, so there is deliberately no [project] or [build-system] table.
+
+[tool.basedpyright]
+# No requires-python exists to read. src/config-flow.mjs runs the
+# resolver under the runner's preinstalled python3, so target the oldest
+# such interpreter: 3.10, the distro python3 on ubuntu-22.04, the oldest
+# GitHub-hosted Ubuntu image.
+pythonVersion = "3.10"
+pythonPlatform = "All"
+typeCheckingMode = "standard"
+# Matches the directories the pre-commit hook passes, so a bare
+# basedpyright run or an editor's language server analyses the same set.
+include = ["src", "tests"]
+# The tests import the resolver as a top-level module after putting src/
+# on sys.path, so resolve it from there.
+extraPaths = ["src"]
