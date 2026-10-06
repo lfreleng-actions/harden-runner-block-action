@@ -24,6 +24,14 @@ export function escapeWorkflowCommand(s) {
     .replace(/\n/g, '%0A');
 }
 
+// Annotation properties (e.g. title=...) are additionally delimited by
+// ':' and ',', so those must be escaped too.
+function escapeProperty(s) {
+  return escapeWorkflowCommand(s)
+    .replace(/:/g, '%3A')
+    .replace(/,/g, '%2C');
+}
+
 // Strip credentials (userinfo) and query/fragment before logging or
 // publishing as a step output. Keeps scheme + host + path so the
 // resulting string is still useful for debugging without leaking
@@ -61,6 +69,13 @@ export function info(msg) {
 export function err(msg) {
   emit(`::error::${escapeWorkflowCommand(msg)}`);
   process.stderr.write(`${msg}\n`);
+}
+
+// Emit a titled annotation ('warning' or 'error'). Unlike err(), this
+// does not echo to stderr: callers log the detail separately, and an
+// annotation is the summary of it.
+export function annotate(level, title, msg) {
+  emit(`::${level} title=${escapeProperty(title)}::${escapeWorkflowCommand(msg)}`);
 }
 
 export function fail(msg) {

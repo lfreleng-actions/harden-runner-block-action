@@ -19,6 +19,14 @@
 # `@main` rather than a per-commit SHA pin because the GitHub
 # Actions 'uses:' field does not support expressions — see the
 # step-level comment below for the trade-off.
+#
+# The one job also proves the invalid_records default end to end. Its
+# allow-list carries a hostname that can never resolve; handed to
+# harden-runner as-is, that makes the agent revert and leave the job
+# with no egress filtering at all. Filtered out first, block mode must
+# hold: an allow-listed host connects and a host outside the list does
+# not. Both checks share this job so that the workflow carries a single
+# floating '@main' reference.
 
 name: "Integration test (post-merge) 🔗"
 
@@ -55,29 +63,35 @@ jobs:
       # 'self-test' wording matters: gha-workflow-linter treats a
       # comment containing a 'test' word as a deliberate test
       # reference and downgrades the finding to a warning.
+      #
+      # The fixture holds api.github.com:443 and the RFC 6761 name
+      # does-not-exist.invalid:443. Default-URL loading is covered by
+      # testing.yaml; what only this job can show is the pre-hook
+      # handover, which is the same whatever the source.
       - name: "Load allow-list (action under test, full ref)"
+        id: load
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/harden-runner-block-action@main # zizmor: ignore[unpinned-uses] intentional self-test of @main
         with:
-          org: 'lfreleng-actions'
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions/harden-runner-block-action//tests/fixtures/allow_list_with_invalid.txt@main'
 
       # Sibling harden-runner step. Its pre: hook reads
-      # ${{ env.CONNECTION_ALLOW_LIST }} (populated by the loader's
-      # pre, which ran earlier in the pre phase) and configures the
-      # network filter in block mode. A successful run end-to-end
-      # confirms the pre-phase env var propagation works.
-      - name: "Harden runner (block mode, consuming loader env var)"
+      # ${{ env.CONNECTION_ALLOW_LIST }} and
+      # ${{ env.HARDEN_RUNNER_EGRESS_POLICY }} (populated by the
+      # loader's pre, which ran earlier in the pre phase) and
+      # configures the network filter in block mode.
+      - name: "Harden runner (block mode, consuming loader env vars)"
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
-          egress-policy: block
+          egress-policy: ${{ env.HARDEN_RUNNER_EGRESS_POLICY }}
           allowed-endpoints: ${{ env.CONNECTION_ALLOW_LIST }}
 
-      # Confirm block-mode enforcement actually has a usable
-      # allow-list. The fetched lfreleng-actions allow-list includes
-      # api.github.com:443, so this curl must succeed.
       - name: "Validate block-mode network access"
         shell: bash
+        env:
+          INVALID_RECORDS: ${{ steps.load.outputs.invalid_records }}
         run: |
           # Validate block-mode network access
           set -euo pipefail
@@ -85,11 +99,31 @@ jobs:
             echo "Error: CONNECTION_ALLOW_LIST not present in env ❌"
             exit 1
           fi
-          # Use wc -w (word count): wc -l would undercount by 1 if
-          # the env var value has no trailing newline.
-          count=$(printf '%s' "$CONNECTION_ALLOW_LIST" | wc -w \
-            | tr -d ' ')
-          echo "Loader published $count endpoints"
+          if [ "${INVALID_RECORDS}" != 'does-not-exist.invalid:443' ]; then
+            echo "Error: invalid_records='${INVALID_RECORDS}' ❌"
+            exit 1
+          fi
+          case " ${CONNECTION_ALLOW_LIST} " in
+            *' does-not-exist.invalid:443 '*)
+              echo "Error: invalid entry reached harden-runner ❌"
+              exit 1
+              ;;
+          esac
+          if [ "${HARDEN_RUNNER_EGRESS_POLICY:-}" != 'block' ]; then
+            echo "Error: egress policy" \
+              "'${HARDEN_RUNNER_EGRESS_POLICY:-}' ❌"
+            exit 1
+          fi
+          echo "Loader published: ${CONNECTION_ALLOW_LIST}"
           curl --fail --silent --show-error --max-time 10 \
             -o /dev/null https://api.github.com/zen
-          echo "Block-mode enforcement working with loaded list ✅"
+          echo "Allow-listed host reachable ✅"
+          # Not in the list: harden-runner sinkholes the lookup and
+          # refuses the connection. Had the agent failed open, this
+          # would connect.
+          if curl --silent --max-time 10 -o /dev/null \
+            https://www.example.org/; then
+            echo "Error: www.example.org reachable; block mode failed open ❌"
+            exit 1
+          fi
+          echo "Host outside the allow-list blocked; block mode held ✅"

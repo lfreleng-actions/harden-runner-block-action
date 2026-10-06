@@ -11,10 +11,13 @@
 //      URL).
 //   2. Reads or fetches the allow-list content.
 //   3. Sanitises it against a strict token allow-list.
-//   4. Publishes it as the configured env var (default
+//   4. Validates every allow-list hostname in DNS the way
+//      harden-runner's agent will, and applies the 'invalid_records'
+//      policy (see dns-policy.mjs).
+//   5. Publishes it as the configured env var (default
 //      CONNECTION_ALLOW_LIST) so that any later action's pre hook
 //      can read it.
-//   5. Publishes step outputs and a step-summary line.
+//   6. Publishes step outputs and a step-summary line.
 //
 // It also turns off GitHub CLI telemetry for the rest of the job
 // (see applyGhTelemetryPolicy), which belongs here because the point
@@ -30,6 +33,7 @@ import { readInputs, resolveSource } from './inputs.mjs';
 import { httpsGet, readLocalFile } from './fetch.mjs';
 import { sanitise } from './sanitise.mjs';
 import { runConfigFlow } from './config-flow.mjs';
+import { enforceInvalidRecordsPolicy } from './dns-policy.mjs';
 
 async function loadContent({ source, filePath, url, displayUrl }) {
   if (source === 'path') {
@@ -82,24 +86,11 @@ function applyGhTelemetryPolicy(inputs) {
   info('GitHub CLI telemetry disabled for later steps ✅');
 }
 
-async function main() {
-  const inputs = readInputs();
-
-  // Applied before the config branch returns, so both source flows
-  // publish it.
-  applyGhTelemetryPolicy(inputs);
-
-  if (inputs.config !== '') {
-    runConfigFlow(inputs);
-    return;
-  }
-
+// Path/URL sources: load, sanitise and report. Returns the tokens.
+async function runLegacyFlow(inputs) {
   const resolved = resolveSource(inputs);
   const sanitised = sanitise(await loadContent(resolved));
 
-  // Publish the env var first so it is visible to every later action's
-  // pre hook (notably step-security/harden-runner).
-  exportEnv(inputs.envVarName, sanitised);
   setOutput('allowed_endpoints', sanitised);
   setOutput('source', resolved.source);
   // resolved_url carries the redacted URL so a credential-bearing 'url'
@@ -107,11 +98,28 @@ async function main() {
   // output stream or the step summary.
   setOutput('resolved_url', resolved.displayUrl);
 
-  const count = sanitised.split(' ').filter(Boolean).length;
-  info(`Loaded ${count} allow-list endpoints ✅`);
+  const tokens = sanitised.split(' ').filter(Boolean);
+  info(`Loaded ${tokens.length} allow-list endpoints ✅`);
   if (inputs.summary) {
-    publishSummary({ ...resolved, count, envVarName: inputs.envVarName });
+    publishSummary({ ...resolved, count: tokens.length, envVarName: inputs.envVarName });
   }
+  return tokens;
+}
+
+async function main() {
+  const inputs = readInputs();
+
+  // Applied before loading, so it holds whatever the source.
+  applyGhTelemetryPolicy(inputs);
+
+  const loaded = inputs.config !== ''
+    ? runConfigFlow(inputs)
+    : await runLegacyFlow(inputs);
+
+  const tokens = await enforceInvalidRecordsPolicy(inputs, loaded);
+
+  // The env var is what step-security/harden-runner's pre hook reads.
+  exportEnv(inputs.envVarName, tokens.join(' '));
 }
 
 main().catch((e) => {

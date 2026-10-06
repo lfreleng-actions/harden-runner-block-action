@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Fixture for the post-merge 'invalid_records' integration test.
+#
+# 'does-not-exist.invalid' can never resolve (RFC 6761). Handed to
+# harden-runner as-is, it makes the agent revert and leave the job with
+# no egress filtering; filtered out by the action, block mode holds.
+api.github.com:443
+does-not-exist.invalid:443
