@@ -28,7 +28,7 @@
 // runner through the documented file/env-var protocol. Plain Node.js,
 // no bundling, no node_modules to vendor.
 
-import { exportEnv, fail, info, setOutput, stepSummary } from './actions-io.mjs';
+import { exportEnv, fail, handOverOutputs, info, setOutput, stepSummary } from './actions-io.mjs';
 import { readInputs, resolveSource } from './inputs.mjs';
 import { httpsGet, readLocalFile } from './fetch.mjs';
 import { sanitise } from './sanitise.mjs';
@@ -120,6 +120,10 @@ async function main() {
 
   // The env var is what step-security/harden-runner's pre hook reads.
   exportEnv(inputs.envVarName, tokens.join(' '));
+
+  // Last: every output, including those the config resolver wrote, is
+  // now in GITHUB_OUTPUT. Pass them to main, which publishes them.
+  handOverOutputs();
 }
 
 main().catch((e) => {

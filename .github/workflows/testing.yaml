@@ -290,6 +290,29 @@ jobs:
           # Trust rule, coordinate round-trip and merge semantics
           node --test tests/test_supplemental.mjs
 
+  ### Unit tests for the pre-to-main output handover. The runner
+  ### discards outputs written in the pre phase, so the action saves
+  ### them as state and main publishes them; a regression would leave
+  ### every 'steps.<id>.outputs' value empty with no error anywhere.
+  test-output-handover-units:
+    name: "Output handover: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run output handover unit tests"
+        shell: bash
+        run: |
+          # Key/value parsing and the pre-to-main round trip
+          node --test tests/test_actions_io.mjs
+
   ### Unit tests for DNS validation and the invalid_records policy.
   ### No network access: DoH responses come from a fake fetch, so
   ### every verdict path is exercised deterministically.
