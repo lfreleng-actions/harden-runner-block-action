@@ -227,8 +227,12 @@ outputs:
   invalid_records:
     description: >
       Space-separated allow-list entries whose hostname definitively
-      failed DNS validation (NXDOMAIN, or no A record). Reported in
-      every 'invalid_records' mode; empty when there are none.
+      failed DNS validation (NXDOMAIN, or no A record); empty when
+      there are none. Published whenever the step succeeds. A failing
+      step publishes no outputs ('error' mode with invalid entries,
+      or 'filter' with every entry invalid): both stop in the pre
+      phase before harden-runner starts, and report their findings in
+      the step summary, the annotation and the log.
   invalid_count:
     description: >
       Number of entries in 'invalid_records'.

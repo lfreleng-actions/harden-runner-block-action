@@ -3,17 +3,16 @@
 //
 // harden-runner-block-action: main-step entrypoint.
 //
-// All the loading / sanitising / exporting work happens in pre.mjs;
-// by the time main runs the work is done and the env var is already
-// visible to any sibling action's pre hook. This entrypoint exists
-// only because the GitHub Actions metadata schema requires a 'main'
-// for every action.
+// All the loading / sanitising / validating / exporting work happens
+// in pre.mjs, so the env var is already visible to any sibling
+// action's pre hook by the time main runs.
 //
-// The main step prints a short confirmation line so users glancing
-// at the log can see the loader has done its work. The pre step
-// does not create any temp files (HTTPS responses are buffered in
-// memory) so there is nothing to clean up here.
+// Main's one job is to publish the step outputs. The runner discards
+// outputs written during the pre phase (pre steps carry no context
+// name), so pre hands them over in a file under RUNNER_TEMP and they
+// are written again here, where 'steps.<id>.outputs' picks them up.
 
-import { info } from './actions-io.mjs';
+import { info, republishOutputs } from './actions-io.mjs';
 
-info('Allow-list loader main step: nothing more to do (pre already ran) ✅');
+const count = republishOutputs();
+info(`Allow-list loader main step: published ${count} output(s) from pre ✅`);

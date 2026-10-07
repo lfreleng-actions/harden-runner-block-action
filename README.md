@@ -457,10 +457,15 @@ controls.
 
 ### Checking a list without enforcing it
 
-The outputs report the findings in every mode, so a scheduled job can
-check a list (for example, the shared allow-list at its default branch
-and at its latest release) and notify on `invalid_count`, with no
-harden-runner step involved.
+The outputs report the findings whenever the step succeeds, so a
+scheduled job can check a list (for example, the shared allow-list at
+its default branch and at its latest release) with `invalid_records:
+filter`, the default, or `warning`, and notify on `invalid_count`, with
+no harden-runner step involved. A failing step publishes no outputs:
+that is `error` mode with invalid entries, and `filter` mode when every
+entry is invalid. Both stop in the pre phase on purpose, before
+harden-runner can start, so their findings appear in the step summary,
+the annotation and the log instead.
 
 ## Supplemental per-org allow-lists
 
@@ -619,7 +624,7 @@ files.pythonhosted.org:443
 ## Implementation details
 
 The action is a Node.js (`node24`) action with a `pre:` hook and a
-near-empty `main:` hook:
+small `main:` hook:
 
 1. **`pre:` (src/pre.mjs)** does all the real work, in the pre
    lifecycle phase:
@@ -636,13 +641,16 @@ near-empty `main:` hook:
    - **Check** every allow-list hostname over DNS-over-HTTPS and
      apply the `invalid_records` policy.
    - **Publish** the result as `$<env_var_name>` (via
-     `$GITHUB_ENV`) and as a step output, plus a step-summary
-     line.
-2. **`main:` (src/main.mjs)** is a near-no-op: it prints a single
-   confirmation line so users glancing at the log can see the
-   loader has done its work. The pre step keeps the HTTPS
-   response in memory and writes no temp file, so `main` has
-   nothing to clean up.
+     `$GITHUB_ENV`), plus a step-summary line, and hand the step
+     outputs to `main` through a private file under `$RUNNER_TEMP`.
+2. **`main:` (src/main.mjs)** publishes the step outputs. The runner
+   discards outputs written during the pre phase, because it gives
+   pre steps no context name, so `steps.<id>.outputs` would
+   otherwise stay empty; state saved in `pre` does reach `main`, and
+   carries the handover file's path. The path, rather than the
+   values, travels in state because state reaches `main` as an
+   environment variable, which Linux caps at 128 KiB. `main`
+   deletes the file once it has published the outputs.
 
 The script has **no npm dependencies**: it uses Node's built-in
 modules (`fs`, `crypto`, `https`, `url`) and `fetch`, and talks to the
@@ -650,14 +658,15 @@ runner via the documented `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
 `$GITHUB_STEP_SUMMARY` files and `::error::` workflow commands. No
 build pipeline, no bundling, no `dist/` directory.
 
-The pre step spans nine single-purpose ES modules, which the runner
+The action spans ten single-purpose ES modules, which the runner
 loads directly (relative imports, no resolution step):
 
 <!-- markdownlint-disable MD013 -->
 
 | Module                 | Responsibility                                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------ |
-| `src/pre.mjs`          | Entrypoint: orchestrates the steps above and publishes outputs.                      |
+| `src/pre.mjs`          | Pre entrypoint: orchestrates the steps above and hands the outputs over to `main`.   |
+| `src/main.mjs`         | Main entrypoint: publishes the outputs `pre` handed over.                            |
 | `src/inputs.mjs`       | Reads and validates inputs, resolves which source to use.                            |
 | `src/fetch.mjs`        | Size-capped HTTPS fetch (redirects, timeout) and local file read.                    |
 | `src/sanitise.mjs`     | Token parsing and strict host/port validation.                                       |
@@ -665,7 +674,7 @@ loads directly (relative imports, no resolution step):
 | `src/supplemental.mjs` | Pure helpers for the supplemental list: spec parsing, the trust rule, the merge.     |
 | `src/dns-validate.mjs` | DoH lookups, retries and verdicts, and the per-mode decision. Pure apart from fetch. |
 | `src/dns-policy.mjs`   | Applies `invalid_records`: outputs, env vars, annotations and step summary.          |
-| `src/actions-io.mjs`   | The runner protocol: workflow commands, outputs, env vars, step summary.             |
+| `src/actions-io.mjs`   | The runner protocol: workflow commands, outputs and their pre-to-main handover.      |
 
 <!-- markdownlint-enable MD013 -->
 
