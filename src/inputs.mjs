@@ -4,6 +4,8 @@
 // Input parsing, validation and allow-list source resolution.
 
 import { fail, getInput, info, redactUrl } from './actions-io.mjs';
+import { EGRESS_POLICY_ENV } from './dns-policy.mjs';
+import { MODES } from './dns-validate.mjs';
 import { checkSupplementalTrust } from './supplemental.mjs';
 
 // GitHub usernames/org names are 1–39 characters, alphanumerics and
@@ -13,6 +15,11 @@ import { checkSupplementalTrust } from './supplemental.mjs';
 const ORG_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 const ENV_VAR_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
+
+// Variables the action publishes for itself. Publishing the allow-list
+// under one of these names would overwrite it (or be overwritten), and
+// harden-runner would receive an endpoint string as its egress policy.
+const RESERVED_ENV_VAR_NAMES = [EGRESS_POLICY_ENV, 'GH_TELEMETRY'];
 
 function rejectNewlines(name, value) {
   if (/[\r\n]/.test(value)) {
@@ -83,6 +90,19 @@ function validate(inputs) {
       `(must match ${ENV_VAR_NAME_RE.source}) ❌`,
     );
   }
+  if (RESERVED_ENV_VAR_NAMES.includes(inputs.envVarName)) {
+    fail(
+      `Invalid env_var_name '${inputs.envVarName}': the action publishes ` +
+      `that variable itself (reserved: ${RESERVED_ENV_VAR_NAMES.join(', ')}) ❌`,
+    );
+  }
+
+  if (!MODES.includes(inputs.invalidRecords)) {
+    fail(
+      `Input 'invalid_records' must be one of ${MODES.join(', ')} ` +
+      `(received '${inputs.invalidRecords}') ❌`,
+    );
+  }
 }
 
 export function readInputs() {
@@ -105,6 +125,7 @@ export function readInputs() {
     disableGhTelemetry:
       getInput('disable_gh_telemetry', 'true') !== 'false',
     envVarName: getInput('env_var_name', 'CONNECTION_ALLOW_LIST'),
+    invalidRecords: getInput('invalid_records', 'filter').trim().toLowerCase(),
     workflowOrg: process.env.GITHUB_REPOSITORY_OWNER || '',
   };
   validate(inputs);

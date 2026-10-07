@@ -59,7 +59,9 @@ inputs:
     description: >
       Name of the environment variable to publish to subsequent steps.
       Must match ^[A-Z_][A-Z0-9_]*$ (uppercase letters, digits,
-      underscores; cannot start with a digit).
+      underscores; cannot start with a digit), and must not be one of
+      the variables the action publishes itself:
+      HARDEN_RUNNER_EGRESS_POLICY or GH_TELEMETRY.
     required: false
     default: "CONNECTION_ALLOW_LIST"
   config:
@@ -142,6 +144,26 @@ inputs:
       blocked connection.
     required: false
     default: "false"
+  invalid_records:
+    description: >
+      What to do with allow-list entries whose hostname does not
+      resolve. step-security/harden-runner resolves every non-wildcard
+      entry before enabling block mode, and when any one fails it
+      reverts, leaving the job with NO egress filtering while still
+      reporting success. The action resolves each allow-list hostname
+      first, as harden-runner will, and then:
+        filter  - removes unresolvable entries, so block mode stays
+                  enforced (default).
+        warning - keeps them and publishes
+                  HARDEN_RUNNER_EGRESS_POLICY=audit, so a job that
+                  passes that variable to harden-runner's
+                  'egress-policy' runs in audit mode instead.
+        error   - fails the step.
+        ignore  - keeps them; harden-runner fails open.
+      Validation runs in every invocation; the step summary and
+      annotations follow 'allow_list_summary'. See the README.
+    required: false
+    default: "filter"
 
 outputs:
   allowed_endpoints:
@@ -202,6 +224,31 @@ outputs:
       this is the only audit trail available, since the spec names a
       branch and the branch moves. Empty when the feature is unused or
       the list was absent.
+  invalid_records:
+    description: >
+      Space-separated allow-list entries whose hostname definitively
+      failed DNS validation (NXDOMAIN, or no A record). Reported in
+      every 'invalid_records' mode; empty when there are none.
+  invalid_count:
+    description: >
+      Number of entries in 'invalid_records'.
+  indeterminate_records:
+    description: >
+      Space-separated allow-list entries that reached no DNS verdict
+      after retries (SERVFAIL, timeouts, provider errors). Removed only
+      in 'filter' mode, and never when more than a quarter of the
+      lookups reached no verdict, which points at the DNS providers
+      rather than the allow-list.
+  indeterminate_count:
+    description: >
+      Number of entries in 'indeterminate_records'.
+  egress_policy:
+    description: >
+      The egress policy the action recommends: 'audit' when
+      'invalid_records' is 'warning' and invalid entries were found,
+      otherwise 'block'. Also published as the
+      HARDEN_RUNNER_EGRESS_POLICY environment variable, which is the
+      form a harden-runner step's 'with:' can read.
 
 runs:
   using: "node24"

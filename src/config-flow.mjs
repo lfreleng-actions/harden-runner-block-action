@@ -20,7 +20,6 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import {
-  exportEnv,
   fail,
   info,
   maskSecret,
@@ -243,8 +242,10 @@ function applySupplemental(inputs, baseline) {
   return tokens;
 }
 
+// Resolve the config-mode allow-list and return its tokens. The caller
+// validates them and publishes the env var.
 export function runConfigFlow(inputs) {
-  const { config, token, workflowOrg, envVarName, summary } = inputs;
+  const { config, token, workflowOrg, summary } = inputs;
 
   maskSecret(token);
 
@@ -278,9 +279,7 @@ export function runConfigFlow(inputs) {
     tokens = applySupplemental(inputs, tokens);
   }
 
-  // The resolver already wrote the step outputs and summary; we only
-  // need to publish the env var the downstream harden-runner pre hook
-  // consumes.
-  exportEnv(envVarName, tokens.join(' '));
+  // The resolver already wrote the step outputs and summary.
   info(`Loaded ${tokens.length} allow-list endpoints via config ✅`);
+  return tokens;
 }

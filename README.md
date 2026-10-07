@@ -108,19 +108,20 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                    | Required | Default                 | Description                                                                                                                                                      |
-| ----------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_list_path`       | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                         |
-| `url`                   | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                         |
-| `org`                   | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted. |
-| `env_var_name`          | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores).                             |
-| `config`                | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                      |
-| `token`                 | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                          |
-| `allow_list_summary`    | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                   |
-| `disable_gh_telemetry`  | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.      |
-| `supplemental_config`   | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.        |
-| `supplemental_unpinned` | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                      |
-| `supplemental_required` | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                 |
+| Name                    | Required | Default                 | Description                                                                                                                                                                                                                              |
+| ----------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_list_path`       | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                                                                                                 |
+| `url`                   | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                                                                                                 |
+| `org`                   | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted.                                                                         |
+| `env_var_name`          | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores), and must not be `HARDEN_RUNNER_EGRESS_POLICY` or `GH_TELEMETRY`, which the action publishes itself. |
+| `config`                | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                                                                                              |
+| `token`                 | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                                                                                                  |
+| `allow_list_summary`    | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                                                                                           |
+| `disable_gh_telemetry`  | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.                                                                              |
+| `supplemental_config`   | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.                                                                                |
+| `supplemental_unpinned` | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                              |
+| `supplemental_required` | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                         |
+| `invalid_records`       | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -128,20 +129,25 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                  | Description                                                                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowed_endpoints`   | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list contributed endpoints.   |
-| `source`              | One of `path`, `url`, `default-url`, `config`.                                                                                               |
-| `resolved_url`        | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead). |
-| `resolved_host_org`   | Host org that supplied the allow-list (`config` mode).                                                                                       |
-| `resolved_repo`       | Repository that supplied the allow-list (`config` mode).                                                                                     |
-| `resolved_ref`        | Git ref requested for the `config` fetch.                                                                                                    |
-| `resolved_sha`        | Exact commit SHA the `config` ref resolved to.                                                                                               |
-| `resolved_path`       | In-repo path of the matched `config` file.                                                                                                   |
-| `matched_candidate`   | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                          |
-| `supplemental_source` | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                        |
-| `supplemental_count`  | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                  |
-| `supplemental_sha`    | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                               |
+| Name                    | Description                                                                                                                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_endpoints`     | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list contributed endpoints.   |
+| `source`                | One of `path`, `url`, `default-url`, `config`.                                                                                               |
+| `resolved_url`          | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead). |
+| `resolved_host_org`     | Host org that supplied the allow-list (`config` mode).                                                                                       |
+| `resolved_repo`         | Repository that supplied the allow-list (`config` mode).                                                                                     |
+| `resolved_ref`          | Git ref requested for the `config` fetch.                                                                                                    |
+| `resolved_sha`          | Exact commit SHA the `config` ref resolved to.                                                                                               |
+| `resolved_path`         | In-repo path of the matched `config` file.                                                                                                   |
+| `matched_candidate`     | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                          |
+| `supplemental_source`   | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                        |
+| `supplemental_count`    | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                  |
+| `supplemental_sha`      | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                               |
+| `invalid_records`       | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                              |
+| `invalid_count`         | Number of entries in `invalid_records`.                                                                                                      |
+| `indeterminate_records` | Space-separated entries that reached no DNS verdict after retries.                                                                           |
+| `indeterminate_count`   | Number of entries in `indeterminate_records`.                                                                                                |
+| `egress_policy`         | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.           |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -333,6 +339,129 @@ To opt out of the behaviour altogether:
       disable_gh_telemetry: false
 ```
 
+## DNS checks on the allow-list
+
+Before enabling block mode, harden-runner's agent resolves every
+non-wildcard entry in `allowed-endpoints`. When **any** of them fails
+to resolve, the agent reverts its firewall and DNS changes and the job
+continues with **no egress filtering and no egress monitoring**, while
+the harden-runner step still reports success. One stale hostname in a
+shared allow-list disables block mode in every job that consumes it,
+and the log carries nothing more than this:
+
+```text
+Error resolving allowed domain ... unable to resolve domain jenkins.example.org.
+Reverted changes
+```
+
+So the action resolves every hostname in the allow-list first, the
+same way the agent will, and applies the `invalid_records` policy:
+
+<!-- markdownlint-disable MD013 -->
+
+| Mode               | Allow-list published    | Egress policy | Step   | Reporting (first invocation)                     |
+| ------------------ | ----------------------- | ------------- | ------ | ------------------------------------------------ |
+| `filter` (default) | Invalid entries removed | `block`       | passes | Warning annotation and step summary              |
+| `warning`          | Unchanged               | `audit`       | passes | Warning annotation and step summary              |
+| `error`            | Not published           | `block`       | fails  | Step summary; the failure itself annotates       |
+| `ignore`           | Unchanged               | `block`       | passes | Warning annotation that harden-runner fails open |
+
+<!-- markdownlint-enable MD013 -->
+
+`filter` is the default because it costs nothing: no job can reach a
+hostname without an A record, so removing one takes nothing away from
+the job, and block mode stays enforced without any change to the
+calling workflow. The one exception: when every entry fails, `filter`
+fails the step rather than publishing an empty list, which would
+block every connection the job makes.
+
+### Check everywhere, report once
+
+The check runs in **every** invocation. Each job starts its own
+harden-runner agent, and each agent resolves the list for itself, so a
+check confined to the first job would leave every other job free to
+fail open. The check is cheap: around 300 ms for the 155 hostnames in
+the `lfreleng-actions` list, measured on cold processes, against the
+ten seconds or so that harden-runner's own pre step takes. The
+`DNS validation: benchmark` job in `testing.yaml` measures it again on
+a GitHub-hosted runner for every change.
+
+Reporting differs. The step summary and the annotations follow
+`allow_list_summary`, which a workflow already sets `true` on one
+invocation (and `false` everywhere else) so that the allow-list block
+appears once per run. The action reports a stale hostname once per
+workflow run, not once per job. Every invocation still logs its
+findings to the console, and in `error` mode every job fails, because
+a failing job must say why.
+
+### How the action checks a hostname
+
+The check mirrors the agent rather than the runner's own resolver,
+because the two can disagree:
+
+- The action asks Google's DNS-over-HTTPS JSON API (`dns.google`) for
+  an A record, falling back to Cloudflare's (`cloudflare-dns.com`) when
+  the request fails in transport, as the agent does. An HTTP error or
+  unreadable response is not a transport failure: the agent never
+  falls back on one, so the action retries the same provider.
+- A hostname is **valid** when the answer carries an A record. NXDOMAIN,
+  and a NOERROR answer with no A record, are **invalid**: that includes
+  hosts with AAAA records and no A record, and CNAMEs whose target has
+  no A record. Names under `.internal`, which the agent refuses in
+  block mode, are invalid too.
+- The action skips wildcard (`*.`) entries; the agent never
+  pre-resolves them.
+- The action retries failures that say nothing about the record
+  (SERVFAIL, REFUSED, HTTP errors, timeouts) with jittered exponential
+  backoff: three attempts, three seconds each. An entry still without
+  an answer is **indeterminate**. The action annotates it in every mode
+  and removes it in `filter` mode alone. It never fails the step in
+  `error` mode, which keeps a DNS blip from turning CI red.
+- Lookups run 32 at a time, under a 15-second deadline for the whole
+  list. When more than a quarter of them reach no verdict, the fault
+  most probably lies with the providers, so `filter` leaves the
+  indeterminate entries in place rather than stripping the allow-list
+  wholesale.
+
+DNS-over-HTTPS travels over TCP and TLS, so it needs no separate
+UDP-to-TCP fallback: TCP retransmits lost packets and never truncates
+a response.
+
+### Switching to audit mode on invalid entries
+
+`warning` mode publishes `HARDEN_RUNNER_EGRESS_POLICY=audit` when it
+finds invalid entries (and `block` otherwise). Audit mode keeps
+harden-runner's monitoring, which a failed-open agent loses too. The
+variable takes effect where the harden-runner step reads it:
+
+```yaml
+  - uses: step-security/harden-runner@<sha>
+    with:
+      egress-policy: ${{ env.HARDEN_RUNNER_EGRESS_POLICY }}
+      allowed-endpoints: ${{ env.CONNECTION_ALLOW_LIST }}
+```
+
+### What the check does not cover
+
+The agent also resolves endpoints it adds itself, never present in the
+allow-list: GitHub hosts such as `codeload.github.com` and
+`actions-results-receiver-production.githubapp.com`, StepSecurity's
+`agent.api.stepsecurity.io` and `prod.app-api.stepsecurity.io`, and
+the GitHub Actions domains it fetches from the GitHub Meta API on each
+run. The action leaves these alone. It cannot remove them, so
+`filter` would have nothing to act on, and copying the agent's set
+would drift with each harden-runner release. One of them failing to
+resolve would still make the agent fail open; the check removes the
+risk that the allow-list itself carries, which is the part a caller
+controls.
+
+### Checking a list without enforcing it
+
+The outputs report the findings in every mode, so a scheduled job can
+check a list (for example, the shared allow-list at its default branch
+and at its latest release) and notify on `invalid_count`, with no
+harden-runner step involved.
+
 ## Supplemental per-org allow-lists
 
 A single shared allow-list grants every endpoint it carries to every
@@ -504,6 +633,8 @@ near-empty `main:` hook:
    - **Sanitise** the content (drop BOM/comments, collapse
      whitespace, check every token against a strict allow-list and
      port range).
+   - **Check** every allow-list hostname over DNS-over-HTTPS and
+     apply the `invalid_records` policy.
    - **Publish** the result as `$<env_var_name>` (via
      `$GITHUB_ENV`) and as a step output, plus a step-summary
      line.
@@ -514,12 +645,12 @@ near-empty `main:` hook:
    nothing to clean up.
 
 The script has **no npm dependencies**: it uses Node's built-in
-modules (`fs`, `crypto`, `https`, `url`) and talks to the runner via
-the documented `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
+modules (`fs`, `crypto`, `https`, `url`) and `fetch`, and talks to the
+runner via the documented `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
 `$GITHUB_STEP_SUMMARY` files and `::error::` workflow commands. No
 build pipeline, no bundling, no `dist/` directory.
 
-The pre step spans seven single-purpose ES modules, which the runner
+The pre step spans nine single-purpose ES modules, which the runner
 loads directly (relative imports, no resolution step):
 
 <!-- markdownlint-disable MD013 -->
@@ -532,6 +663,8 @@ loads directly (relative imports, no resolution step):
 | `src/sanitise.mjs`     | Token parsing and strict host/port validation.                                       |
 | `src/config-flow.mjs`  | Drives the shared Python resolver for the `config` input, and merges a supplemental. |
 | `src/supplemental.mjs` | Pure helpers for the supplemental list: spec parsing, the trust rule, the merge.     |
+| `src/dns-validate.mjs` | DoH lookups, retries and verdicts, and the per-mode decision. Pure apart from fetch. |
+| `src/dns-policy.mjs`   | Applies `invalid_records`: outputs, env vars, annotations and step summary.          |
 | `src/actions-io.mjs`   | The runner protocol: workflow commands, outputs, env vars, step summary.             |
 
 <!-- markdownlint-enable MD013 -->

@@ -81,6 +81,8 @@ jobs:
           INPUT_URL: ""
           INPUT_ORG: ""
           INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+          # Asserts the exact published list; keep live DNS out of it.
+          INPUT_INVALID_RECORDS: "ignore"
         run: |
           # Run pre.mjs (action under test)
           set -euo pipefail
@@ -288,6 +290,235 @@ jobs:
           # Trust rule, coordinate round-trip and merge semantics
           node --test tests/test_supplemental.mjs
 
+  ### Unit tests for DNS validation and the invalid_records policy.
+  ### No network access: DoH responses come from a fake fetch, so
+  ### every verdict path is exercised deterministically.
+  test-dns-validation-units:
+    name: "DNS validation: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run DNS validation unit tests"
+        shell: bash
+        run: |
+          # Verdicts, provider fallback, retries, deadline and modes
+          node --test tests/test_dns_validate.mjs
+
+  ### invalid_records, end to end against the real DoH providers.
+  ###
+  ### 'does-not-exist.invalid' is guaranteed NXDOMAIN by RFC 6761, so
+  ### each mode's outcome is deterministic without depending on the
+  ### current state of any real hostname.
+  test-invalid-records-modes:
+    name: "DNS validation: invalid_records modes"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Exercise every mode"
+        shell: bash
+        run: |
+          # Exercise every invalid_records mode
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/dns-allow-list.txt"
+          printf '%s\n' 'github.com:443' 'does-not-exist.invalid:443' \
+            '*.githubusercontent.com:443' > "$al_file"
+          bad='does-not-exist.invalid:443'
+          failures=0
+
+          # run <mode> <summary> -> sets rc and the captured_* files
+          run() {
+            captured_env="${RUNNER_TEMP}/env_$1_$2"
+            captured_out="${RUNNER_TEMP}/out_$1_$2"
+            captured_sum="${RUNNER_TEMP}/sum_$1_$2"
+            captured_log="${RUNNER_TEMP}/log_$1_$2"
+            : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+            # The runner's bash runs with -e; capture the exit status
+            # instead of letting an expected failure end the script.
+            rc=0
+            GITHUB_ENV="$captured_env" \
+            GITHUB_OUTPUT="$captured_out" \
+            GITHUB_STEP_SUMMARY="$captured_sum" \
+            INPUT_ALLOW_LIST_PATH="$al_file" \
+            INPUT_INVALID_RECORDS="$1" \
+            INPUT_ALLOW_LIST_SUMMARY="$2" \
+              node src/pre.mjs > "$captured_log" 2>&1 || rc=$?
+          }
+          # expect <description> <command...>
+          expect() {
+            local desc="$1"
+            shift
+            if "$@"; then
+              echo "  ✅ ${desc}"
+            else
+              echo "  ❌ ${desc}"
+              # Leading space: show the commands without re-emitting
+              # them as real annotations.
+              sed 's/^::/ ::/' "$captured_log"
+              failures=$((failures + 1))
+            fi
+          }
+          exited() { [ "$rc" -eq "$1" ]; }
+          failed() { [ "$rc" -ne 0 ]; }
+          allow() { grep '^CONNECTION_ALLOW_LIST=' "$captured_env"; }
+          listed() { allow | grep -qF -- "$1"; }
+          unlisted() { ! listed "$1"; }
+          unpublished() { ! allow > /dev/null; }
+          output_is() { grep -qxF -- "$1" "$captured_out"; }
+          env_is() { grep -qxF -- "$1" "$captured_env"; }
+          logged() { grep -q -- "$1" "$captured_log"; }
+          unannotated() { ! grep -q '^::' "$captured_log"; }
+          summarised() { grep -qF 'Allow-list DNS validation' "$captured_sum"; }
+          unsummarised() { ! summarised; }
+          summary_empty() { [ ! -s "$captured_sum" ]; }
+
+          echo "filter (the default), reporting invocation"
+          run filter true
+          expect "exits 0" exited 0
+          expect "invalid entry filtered" unlisted "$bad"
+          expect "valid entries kept" \
+            listed 'github.com:443 *.githubusercontent.com:443'
+          expect "invalid_records output" output_is "invalid_records=$bad"
+          expect "invalid_count output" output_is 'invalid_count=1'
+          expect "egress policy block" \
+            env_is 'HARDEN_RUNNER_EGRESS_POLICY=block'
+          expect "annotation emitted" \
+            logged '^::warning title=Unresolvable.* filtered::'
+          expect "summary written" summarised
+
+          echo "filter, non-reporting invocation"
+          run filter false
+          expect "exits 0" exited 0
+          expect "still filtered" unlisted "$bad"
+          expect "no annotations" unannotated
+          expect "no summary" summary_empty
+
+          echo "warning"
+          run warning true
+          expect "exits 0" exited 0
+          expect "entry kept" listed "$bad"
+          expect "egress policy audit" \
+            env_is 'HARDEN_RUNNER_EGRESS_POLICY=audit'
+          expect "annotation emitted" logged '^::warning title=.*audit mode::'
+          expect "summary written" summarised
+
+          echo "error"
+          run error true
+          expect "exits non-zero" failed
+          expect "error annotation" logged '^::error::'
+          expect "summary written" summarised
+          expect "allow-list not published" unpublished
+
+          echo "error, non-reporting invocation still fails"
+          run error false
+          expect "exits non-zero" failed
+
+          echo "ignore"
+          run ignore true
+          expect "exits 0" exited 0
+          expect "entry kept" listed "$bad"
+          expect "fail-open annotation" logged '^::warning title=.*fails open::'
+          expect "no DNS validation summary" unsummarised
+
+          echo "rejects an unknown mode"
+          run bogus true
+          expect "exits non-zero" failed
+          expect "names the input" logged 'invalid_records'
+
+          # The exception to filter's passing behaviour: with nothing
+          # left, block mode would refuse every connection the job
+          # makes, so the step must fail rather than publish.
+          echo "filter, every entry invalid"
+          printf '%s\n' "$bad" 'also-missing.invalid:443' > "$al_file"
+          run filter true
+          expect "exits non-zero" failed
+          expect "names the cause" logged 'refusing to publish an empty list'
+          expect "allow-list not published" unpublished
+          expect "invalid_count output" output_is 'invalid_count=2'
+
+          if [ "$failures" -gt 0 ]; then
+            echo "Error: $failures invalid_records assertion(s) failed ❌"
+            exit 1
+          fi
+          echo "All invalid_records mode assertions passed ✅"
+
+  ### Benchmark: DNS validation cost against the live org allow-list,
+  ### measured on a GitHub-hosted runner in separate (cold) processes,
+  ### which is how every job meets it. Informational: a slow run warns
+  ### rather than fails, because runner network latency varies.
+  benchmark-dns-validation:
+    name: "DNS validation: benchmark"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Time DNS validation of the live allow-list"
+        shell: bash
+        env:
+          INPUT_CONFIG: 'lfreleng-actions@main'
+          INPUT_ALLOW_LIST_SUMMARY: 'false'
+          RUNS: '10'
+          # Warn when the median validation time exceeds this budget.
+          BUDGET_MS: '1500'
+        run: |
+          # Time DNS validation of the live allow-list
+          set -euo pipefail
+          times=()
+          hosts=''
+          for i in $(seq 1 "$RUNS"); do
+            log="${RUNNER_TEMP}/bench_$i.log"
+            GITHUB_ENV="${RUNNER_TEMP}/bench_env" \
+            GITHUB_OUTPUT="${RUNNER_TEMP}/bench_out" \
+            GITHUB_STEP_SUMMARY=/dev/null \
+              node src/pre.mjs > "$log"
+            line=$(grep '^DNS validation:' "$log")
+            echo "run $i: $line"
+            ms=$(sed -E 's/.* checked in ([0-9]+) ms.*/\1/' <<< "$line")
+            hosts=$(sed -E 's/^DNS validation: ([0-9]+) .*/\1/' <<< "$line")
+            times+=("$ms")
+          done
+          mapfile -t sorted < <(printf '%s\n' "${times[@]}" | sort -n)
+          min=${sorted[0]}
+          median=${sorted[$((RUNS / 2))]}
+          max=${sorted[$((RUNS - 1))]}
+          {
+            echo '### ⏱️ DNS validation benchmark'
+            echo ''
+            echo "Live \`lfreleng-actions@main\` allow-list, ${hosts}" \
+              "hostnames, ${RUNS} cold processes."
+            echo ''
+            echo '| Min | Median | Max | Budget |'
+            echo '| --- | ------ | --- | ------ |'
+            echo "| ${min} ms | ${median} ms | ${max} ms | ${BUDGET_MS} ms |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$median" -gt "$BUDGET_MS" ]; then
+            echo "::warning title=DNS validation slow::Median ${median} ms" \
+              "exceeds the ${BUDGET_MS} ms budget"
+          fi
+          echo "min=${min}ms median=${median}ms max=${max}ms ✅"
+
   ### Supplemental allow-list: a real, two-fetch merge.
   ###
   ### Both specs name the same shared list at two immutable commit
@@ -326,6 +557,10 @@ jobs:
           # yamllint disable-line rule:line-length
           INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions@7409b5aad828768b12d015848ee2a4d4dbf34610"
           INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+          # These historical lists carry jenkins.lfbroadband.org, which
+          # no longer resolves. The assertions are about merging, so
+          # keep DNS validation from changing the exact counts.
+          INPUT_INVALID_RECORDS: "ignore"
         run: |
           # Merge a supplemental allow-list into the baseline
           set -euo pipefail
@@ -451,6 +686,8 @@ jobs:
           # yamllint disable-line rule:line-length
           INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
           INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+          # Exact counts, as above: keep DNS validation out of them.
+          INPUT_INVALID_RECORDS: "ignore"
         run: |
           # A supplemental that adds nothing must change nothing
           set -euo pipefail
@@ -680,6 +917,8 @@ jobs:
           # yamllint disable-line rule:line-length
           INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions//absent_list_for_tests.txt@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
           INPUT_ENV_VAR_NAME: "CONNECTION_ALLOW_LIST"
+          # Exact baseline count: keep DNS validation out of it.
+          INPUT_INVALID_RECORDS: "ignore"
         run: |
           # A missing supplemental leaves the baseline usable
           set -euo pipefail
@@ -1016,6 +1255,35 @@ jobs:
           fi
           echo "Invalid env_var_name correctly rejected (exit $rc) ✅"
 
+      # The action publishes these itself; sharing a name would hand
+      # harden-runner the endpoint list as its egress policy.
+      - name: "Run pre.mjs with a reserved env_var_name"
+        shell: bash
+        env:
+          INPUT_ORG: "lfreleng-actions"
+        run: |
+          # Run pre.mjs with a reserved env_var_name
+          set -euo pipefail
+          for name in HARDEN_RUNNER_EGRESS_POLICY GH_TELEMETRY; do
+            log="${RUNNER_TEMP}/reserved_${name}.log"
+            rc=0
+            GITHUB_ENV="${RUNNER_TEMP}/reserved_env" \
+            GITHUB_OUTPUT="${RUNNER_TEMP}/reserved_out" \
+            GITHUB_STEP_SUMMARY=/dev/null \
+            INPUT_ENV_VAR_NAME="$name" \
+              node src/pre.mjs > "$log" 2>&1 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "Error: pre.mjs accepted reserved name ${name} ❌"
+              exit 1
+            fi
+            if ! grep -qF 'publishes that variable itself' "$log"; then
+              echo "Error: no reserved-name message for ${name} ❌"
+              sed 's/^::/ ::/' "$log"
+              exit 1
+            fi
+            echo "Reserved env_var_name ${name} rejected (exit $rc) ✅"
+          done
+
   ### Failure: newline in path input. Asserts the injection guard
   ### fires.
   test-rejects-newline-in-path:
@@ -1224,6 +1492,10 @@ jobs:
         env:
           SINGLE_FILE: ${{ steps.stage.outputs.single }}
           MULTI_FILE: ${{ steps.stage.outputs.multi }}
+          # This compares parsing, not DNS. Under the default 'filter',
+          # a lookup blip in one run alone would drop an entry from that
+          # run and fail the diff for a reason unrelated to the format.
+          INPUT_INVALID_RECORDS: "ignore"
         run: |
           # Run pre.mjs on both fixtures and diff the output
           set -euo pipefail
@@ -1333,7 +1605,7 @@ jobs:
           set -euo pipefail
           captured_env="${RUNNER_TEMP}/env_config"
           : > "$captured_env"
-          # The policy applies before the config branch returns, so this
+          # The policy applies before the allow-list loads, so this
           # asserts ordering rather than config resolution -- which
           # test-config-mode already covers. Tolerate a resolution
           # failure so the two tests stay independent.
@@ -1403,6 +1675,8 @@ jobs:
         env:
           INPUT_ALLOW_LIST_PATH: ${{ steps.stage.outputs.al_file }}
           INPUT_DISABLE_GH_TELEMETRY: 'false'
+          # Asserts the exact published list; keep live DNS out of it.
+          INPUT_INVALID_RECORDS: 'ignore'
         run: |
           # Opt-out leaves the environment untouched
           set -euo pipefail
