@@ -133,6 +133,18 @@ export function stepSummary(markdown) {
   fs.appendFileSync(file, markdown);
 }
 
+// Save a value for the same action's later lifecycle steps, which read
+// it back as STATE_<name>. The runner carries state only between the
+// phases of one action, so unlike an env var it is invisible to every
+// other step. Optional, as the step summary is: a test harness or an
+// odd runner that provides no state file loses nothing worse than a
+// cross-phase hint.
+export function saveState(name, value) {
+  const file = process.env.GITHUB_STATE;
+  if (!file) return;
+  appendKeyValue(file, name, String(value));
+}
+
 // Parse a runner key/value file (GITHUB_OUTPUT and friends) in both
 // the plain 'name=value' and the 'name<<DELIM ... DELIM' forms. A later
 // line for a key wins, as it does when the runner reads the file.

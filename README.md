@@ -122,6 +122,8 @@ steps:
 | `supplemental_unpinned` | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                              |
 | `supplemental_required` | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                         |
 | `invalid_records`       | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                |
+| `agent_timeout`         | No       | `120`                   | Seconds the main step waits for harden-runner's agent to report that enforcement is in place. `0` disables the wait. See [Waiting for the agent](#waiting-for-the-agent).                                                                |
+| `agent_not_ready`       | No       | `error`                 | What to do when the agent never reports ready: `error` fails the step, `warning` annotates and continues. See [Waiting for the agent](#waiting-for-the-agent).                                                                           |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -148,6 +150,8 @@ steps:
 | `indeterminate_records` | Space-separated entries that reached no DNS verdict after retries.                                                                           |
 | `indeterminate_count`   | Number of entries in `indeterminate_records`.                                                                                                |
 | `egress_policy`         | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.           |
+| `agent_status`          | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.     |
+| `agent_wait_ms`         | Milliseconds the main step waited for the agent.                                                                                             |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -359,14 +363,18 @@ same way the agent will, and applies the `invalid_records` policy:
 
 <!-- markdownlint-disable MD013 -->
 
-| Mode               | Allow-list published    | Egress policy | Step   | Reporting (first invocation)                     |
-| ------------------ | ----------------------- | ------------- | ------ | ------------------------------------------------ |
-| `filter` (default) | Invalid entries removed | `block`       | passes | Warning annotation and step summary              |
-| `warning`          | Unchanged               | `audit`       | passes | Warning annotation and step summary              |
-| `error`            | Not published           | `block`       | fails  | Step summary; the failure itself annotates       |
-| `ignore`           | Unchanged               | `block`       | passes | Warning annotation that harden-runner fails open |
+| Mode               | Allow-list published    | Egress policy | Step                                   | Reporting (first invocation)                     |
+| ------------------ | ----------------------- | ------------- | -------------------------------------- | ------------------------------------------------ |
+| `filter` (default) | Invalid entries removed | `block`       | passes                                 | Warning annotation and step summary              |
+| `warning`          | Unchanged               | `audit`       | passes                                 | Warning annotation and step summary              |
+| `error`            | Not published           | `block`       | fails                                  | Step summary; the failure itself annotates       |
+| `ignore`           | Unchanged               | `block`       | fails once the agent reverts [^ignore] | Warning annotation that harden-runner fails open |
 
 <!-- markdownlint-enable MD013 -->
+
+[^ignore]: The pre step passes; the main step then waits for the agent,
+    sees it revert, and fails under the default `agent_not_ready: error`.
+    See [Waiting for the agent](#waiting-for-the-agent).
 
 `filter` is the default because it costs nothing: no job can reach a
 hostname without an A record, so removing one takes nothing away from
@@ -466,6 +474,112 @@ that is `error` mode with invalid entries, and `filter` mode when every
 entry is invalid. Both stop in the pre phase on purpose, before
 harden-runner can start, so their findings appear in the step summary,
 the annotation and the log instead.
+
+## Waiting for the agent
+
+harden-runner's pre hook installs its agent as a service and then
+polls for `/home/agent/agent.status` thirty times, 300 ms apart. When
+the file has not appeared after those nine seconds the hook logs
+`timed out` and returns success, and the job's main steps begin.
+
+In block mode the agent writes that file after it has resolved
+every non-wildcard entry in `allowed-endpoints`, switched the runner's
+DNS to its own resolver and installed its firewall rules, and not
+before. With the
+`lfreleng-actions` list of some 150 hostnames the resolving alone
+takes nine to ten seconds, so harden-runner's wait expires on **every**
+run, and the first step to open a connection races the agent:
+
+<!-- markdownlint-disable MD013 -->
+
+| Connection opened                                 | Outcome                          |
+| ------------------------------------------------- | -------------------------------- |
+| Before the switch-over                            | Succeeds, unfiltered             |
+| During the `systemd-resolved` and Docker restarts | Fails with a bare `fetch failed` |
+| After the switch-over                             | Filtered as intended             |
+
+<!-- markdownlint-enable MD013 -->
+
+Which of the three a run gets is a matter of milliseconds, and the
+failure shows up as a flaky first step (`setup-uv`, `setup-python`, a
+`curl`) with nothing in its log to explain it.
+
+The action closes the window from its **main** step. The runner
+executes every `pre:` hook, then every main step, in declaration
+order, so the loader's main step runs after harden-runner's pre hook
+and before any other step: the one place every consumer of this action
+already has between the two. It waits there for the status file, up
+to `agent_timeout` seconds (default 120), polling four times a second.
+The wait stops before the deadline when the agent reports an error in
+the status file, or when its log shows `Reverted changes`, which is
+what the agent writes after an allowed endpoint failed to resolve and
+it undid its changes (see [DNS checks](#dns-checks-on-the-allow-list)).
+
+Each of those outcomes leaves the job with no egress filtering while
+every step reports success, which is the state this action exists to
+prevent, so `agent_not_ready` defaults to `error`:
+
+<!-- markdownlint-disable MD013 -->
+
+| Outcome                                        | `agent_status` | `error` (default) | `warning`                     |
+| ---------------------------------------------- | -------------- | ----------------- | ----------------------------- |
+| Agent wrote `Initialized`                      | `ready`        | passes            | passes                        |
+| Agent log shows `Reverted changes`             | `reverted`     | fails             | warning annotation, continues |
+| Agent wrote an error to its status file        | `failed`       | fails             | warning annotation, continues |
+| No verdict within `agent_timeout`              | `timeout`      | fails             | warning annotation, continues |
+| No `/home/agent`, not Linux, or a reused agent | `skipped`      | passes            | passes                        |
+| `agent_timeout: 0`                             | `disabled`     | passes            | passes                        |
+
+<!-- markdownlint-enable MD013 -->
+
+A failing step prints the tail of the agent log, which names the
+endpoint that did not resolve or shows how far the agent got.
+`agent_wait_ms` reports how long the wait took, which is how far past
+harden-runner's nine seconds the agent needed and so how much margin
+`agent_timeout` leaves.
+
+The wait is `skipped` when harden-runner created no agent directory:
+there is no harden-runner step, or StepSecurity's API declined the
+run and harden-runner returned before installing anything. Runners
+off Linux skip the wait too. The Windows agent keeps its status file
+under a directory harden-runner records in its own saved state, which
+another action cannot read, and the macOS agent reports nothing
+harden-runner waits for.
+
+On a persistent self-hosted runner the agent files of an earlier job
+survive, and the agent appends to them rather than replacing them, so
+an old `Initialized` or `Reverted changes` is still there when the
+next job's agent starts. The action's pre hook, which runs before
+harden-runner's, records where each file ends, and main reads from
+that point: a stale verdict never passes or fails a job whose own
+agent has yet to speak. When a file has shrunk or changed inode since
+pre, the agent has truncated or replaced it, and main reads the whole
+file.
+
+A status file that already existed when pre ran is the one case where
+no new verdict is coming. harden-runner's own test for an installed
+agent is that file's existence, and on a self-hosted runner, a custom
+VM image or a hosted runner carrying an installed agent it reuses the
+agent it finds rather than starting another. Whatever it reused wrote
+its verdict before the job began, so the action skips the wait, as it
+does without an agent directory. The log mark still applies: an
+earlier agent that reverted left a log but no status file, so
+harden-runner does install, and the old `Reverted changes` must not
+count against the new agent.
+
+The revert check takes precedence over the status file. The agent
+writes `Initialized`, keeps running, and reverts without removing the
+status file when one of its workers fails afterwards; had enforcement
+come and gone before the main step looked, the status file alone would
+call the job ready. An empty status file is not a verdict either: the
+agent creates the file and then writes to it, and a poll can land
+between the two.
+
+With `invalid_records: ignore` the allow-list keeps entries the agent
+will fail to resolve, so the agent reverts and the default `error`
+here fails the job. That is the intended reading of the two defaults
+together; a caller who wants the job to carry on unfiltered after a
+revert sets `agent_not_ready: warning`.
 
 ## Supplemental per-org allow-lists
 

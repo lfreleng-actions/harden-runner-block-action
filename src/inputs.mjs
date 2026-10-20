@@ -4,6 +4,7 @@
 // Input parsing, validation and allow-list source resolution.
 
 import { fail, getInput, info, redactUrl } from './actions-io.mjs';
+import { AGENT_MODES } from './agent-ready.mjs';
 import { EGRESS_POLICY_ENV } from './dns-policy.mjs';
 import { MODES } from './dns-validate.mjs';
 import { checkSupplementalTrust } from './supplemental.mjs';
@@ -42,6 +43,16 @@ function strictBool(name, value) {
     fail(`Input '${name}' must be 'true' or 'false' (received '${value}') ❌`);
   }
   return value === 'true';
+}
+
+// A whole number of seconds, zero included. Anything else ('1m',
+// '-5', '') is refused rather than read as zero, which would turn a
+// typo into a disabled wait.
+function nonNegativeInt(name, value) {
+  if (!/^\d+$/.test(value)) {
+    fail(`Input '${name}' must be a whole number of seconds (received '${value}') ❌`);
+  }
+  return Number(value);
 }
 
 // Newlines in these inputs would let a caller inject additional
@@ -103,6 +114,13 @@ function validate(inputs) {
       `(received '${inputs.invalidRecords}') ❌`,
     );
   }
+
+  if (!AGENT_MODES.includes(inputs.agentNotReady)) {
+    fail(
+      `Input 'agent_not_ready' must be one of ${AGENT_MODES.join(', ')} ` +
+      `(received '${inputs.agentNotReady}') ❌`,
+    );
+  }
 }
 
 export function readInputs() {
@@ -126,6 +144,8 @@ export function readInputs() {
       getInput('disable_gh_telemetry', 'true') !== 'false',
     envVarName: getInput('env_var_name', 'CONNECTION_ALLOW_LIST'),
     invalidRecords: getInput('invalid_records', 'filter').trim().toLowerCase(),
+    agentTimeout: nonNegativeInt('agent_timeout', getInput('agent_timeout', '120').trim()),
+    agentNotReady: getInput('agent_not_ready', 'error').trim().toLowerCase(),
     workflowOrg: process.env.GITHUB_REPOSITORY_OWNER || '',
   };
   validate(inputs);

@@ -313,6 +313,30 @@ jobs:
           # Key/value parsing and the pre-to-main round trip
           node --test tests/test_actions_io.mjs
 
+  ### Unit tests for the wait on harden-runner's agent. The agent
+  ### directory is a temp dir and the clock is a fake, so the ready,
+  ### reverted, timeout and stale-file paths all run in no time.
+  ### Whether the real agent is waited for lives in integration.yaml,
+  ### which asserts agent_status on a genuine harden-runner step.
+  test-agent-ready-units:
+    name: "Agent wait: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run agent wait unit tests"
+        shell: bash
+        run: |
+          # Verdicts, early exits, the agent_not_ready policy
+          node --test tests/test_agent_ready.mjs
+
   ### Unit tests for DNS validation and the invalid_records policy.
   ### No network access: DoH responses come from a fake fetch, so
   ### every verdict path is exercised deterministically.

@@ -24,12 +24,26 @@
 // of the action is to keep a block-mode egress policy tight and
 // legible.
 //
+// Main (main.mjs) then waits for harden-runner's agent to report that
+// enforcement is in place before any other main step runs; pre records
+// where the agent's files end so main reads only what this job's agent
+// writes.
+//
 // The script has no npm dependencies: it talks to the GitHub Actions
 // runner through the documented file/env-var protocol. Plain Node.js,
 // no bundling, no node_modules to vendor.
 
-import { exportEnv, fail, handOverOutputs, info, setOutput, stepSummary } from './actions-io.mjs';
+import {
+  exportEnv,
+  fail,
+  handOverOutputs,
+  info,
+  saveState,
+  setOutput,
+  stepSummary,
+} from './actions-io.mjs';
 import { readInputs, resolveSource } from './inputs.mjs';
+import { MARKS_STATE, markAgentFiles } from './agent-ready.mjs';
 import { httpsGet, readLocalFile } from './fetch.mjs';
 import { sanitise } from './sanitise.mjs';
 import { runConfigFlow } from './config-flow.mjs';
@@ -107,6 +121,12 @@ async function runLegacyFlow(inputs) {
 }
 
 async function main() {
+  // First: harden-runner's pre hook, and so its agent, start after
+  // this one. The agent appends to its files, so on a persistent
+  // runner an earlier job's records are still there; note where each
+  // file ends now and main reads from there (see agent-ready.mjs).
+  saveState(MARKS_STATE, JSON.stringify(markAgentFiles()));
+
   const inputs = readInputs();
 
   // Applied before loading, so it holds whatever the source.
