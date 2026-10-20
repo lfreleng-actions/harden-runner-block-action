@@ -92,6 +92,8 @@ jobs:
         shell: bash
         env:
           INVALID_RECORDS: ${{ steps.load.outputs.invalid_records }}
+          AGENT_STATUS: ${{ steps.load.outputs.agent_status }}
+          AGENT_WAIT_MS: ${{ steps.load.outputs.agent_wait_ms }}
         run: |
           # Validate block-mode network access
           set -euo pipefail
@@ -99,6 +101,15 @@ jobs:
             echo "Error: CONNECTION_ALLOW_LIST not present in env ❌"
             exit 1
           fi
+          # The loader's main step waits for the agent, so by the time
+          # this step runs enforcement is in place, and the curl checks
+          # below test the policy rather than the race against the
+          # agent's DNS and firewall switch-over.
+          if [ "${AGENT_STATUS}" != 'ready' ]; then
+            echo "Error: agent_status='${AGENT_STATUS}' ❌"
+            exit 1
+          fi
+          echo "Agent ready after ${AGENT_WAIT_MS} ms ✅"
           if [ "${INVALID_RECORDS}" != 'does-not-exist.invalid:443' ]; then
             echo "Error: invalid_records='${INVALID_RECORDS}' ❌"
             exit 1

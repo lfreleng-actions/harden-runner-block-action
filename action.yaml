@@ -26,6 +26,12 @@ description: >
 #     composite action: step-security/harden-runner's own pre hook
 #     reads allowed-endpoints and configures the network filter before
 #     any main step executes.
+#   - The action's main step runs after every pre hook and before any
+#     other main step. It waits there for harden-runner's agent to
+#     report that enforcement is in place, because harden-runner's pre
+#     hook stops waiting after nine seconds and a large allow-list
+#     takes the agent longer than that (inputs: agent_timeout,
+#     agent_not_ready).
 
 inputs:
   allow_list_path:
@@ -164,6 +170,33 @@ inputs:
       annotations follow 'allow_list_summary'. See the README.
     required: false
     default: "filter"
+  agent_timeout:
+    description: >
+      Seconds the main step waits for step-security/harden-runner's
+      agent to report that egress enforcement is in place, before any
+      later step runs. harden-runner's own pre hook waits nine seconds
+      and then continues regardless; in block mode the agent first
+      resolves every allow-list hostname, which a shared organisation
+      list makes take longer than that, so the first step to open a
+      connection otherwise races the agent's DNS and firewall
+      switch-over. The wait ends early when the agent reports an
+      error or reverts its changes. Set to 0 to disable the wait.
+      Linux runners only; elsewhere the step reports 'skipped'.
+    required: false
+    default: "120"
+  agent_not_ready:
+    description: >
+      What to do when the agent has not reported ready by
+      'agent_timeout', has reverted its changes, or has reported an
+      error, each of which leaves the job with no egress filtering:
+        error   - fails the step (default).
+        warning - annotates and continues.
+      Not consulted when harden-runner installed no agent (no
+      harden-runner step, or the StepSecurity API declined to monitor
+      the run), or reused an agent installed before the job began:
+      there is nothing to wait for and the step continues.
+    required: false
+    default: "error"
 
 outputs:
   allowed_endpoints:
@@ -253,6 +286,19 @@ outputs:
       otherwise 'block'. Also published as the
       HARDEN_RUNNER_EGRESS_POLICY environment variable, which is the
       form a harden-runner step's 'with:' can read.
+  agent_status:
+    description: >
+      What the wait for harden-runner's agent found: 'ready' when the
+      agent reported enforcement in place; 'timeout', 'reverted' or
+      'failed' when it did not (the step fails unless 'agent_not_ready'
+      is 'warning'); 'skipped' when there was no agent to wait for (none
+      installed, a reused pre-installed agent, or not Linux); 'disabled'
+      when 'agent_timeout' is 0.
+  agent_wait_ms:
+    description: >
+      Milliseconds the main step spent waiting for the agent. Shows how
+      far past harden-runner's nine-second wait the agent needed, and
+      so how much margin 'agent_timeout' leaves.
 
 runs:
   using: "node24"
