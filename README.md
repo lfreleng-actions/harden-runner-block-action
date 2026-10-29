@@ -283,6 +283,55 @@ current repository alone, so pass a PAT or GitHub App token here:
 > as paired pull requests across `harden-runner-block-action` and
 > `python-audit-action`.
 
+### Troubleshooting a failed config fetch
+
+A failed fetch stops the step with an error of this shape:
+
+```text
+config resolution error: git fetch of '<ref>' from <org>/<repo> failed: <git stderr>
+```
+
+The git output at the end tells the two causes apart:
+
+- **The ref or the repository is wrong.** Git reports
+  `couldn't find remote ref`, `not our ref`, `Repository not found`,
+  or HTTP 404 or 401. The action fails at once, without retrying.
+  Check the `@ref` pin and, for a private repository, the `token`.
+- **GitHub refused or dropped the request.** Git reports HTTP 403,
+  408, 429 or 5xx, or a connection failure such as
+  `Could not resolve host` or `Connection reset`. The action retries
+  up to three attempts in total, waiting about 2 s and then 5 s,
+  within the resolver's timeout, and logs one line per retry:
+
+  ```text
+  fetch attempt 1 of 3 failed (HTTP 403); retrying in 2 s
+  ```
+
+  A retry that succeeds leaves the step green. When every attempt
+  fails, the error ends with this sentence, and the pin is probably
+  sound:
+
+  <!-- markdownlint-disable MD013 -->
+
+  ```text
+  GitHub refused the fetch 3 times (HTTP 403); the ref may still be valid, see the retry log
+  ```
+
+  <!-- markdownlint-enable MD013 -->
+
+  GitHub throttles anonymous git traffic from shared runner
+  addresses, so a workflow that starts dozens of jobs in the same
+  minute can hit it. Re-run the job, or pass a token: GitHub does not
+  throttle an authenticated fetch this way, and the workflow's own
+  `GITHUB_TOKEN` reads a public config repository in any
+  organisation:
+
+  ```yaml
+      with:
+        config: 'lfreleng-actions@v0.19.0'
+        token: ${{ github.token }}
+  ```
+
 ### Suppressing the step summary on matrix jobs
 
 Each matrix leg is a separate job with its own step summary, so the
