@@ -91,7 +91,12 @@ inputs:
       a private host repository. Leave empty for public repositories.
       GITHUB_TOKEN only grants access to the current repository;
       reading a private config repo in another org needs a PAT or
-      GitHub App token with contents:read on that repo.
+      GitHub App token with contents:read on that repo. Without a
+      token the fetch is anonymous, and GitHub may refuse it (HTTP
+      403) when many jobs fetch at once; the action retries, and a
+      caller that still hits the limit can pass the workflow's
+      GITHUB_TOKEN (github.token), which reads a public config
+      repository in any organisation.
     required: false
     default: ""
   allow_list_summary:
