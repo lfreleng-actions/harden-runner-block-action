@@ -10,7 +10,8 @@
 //   1. Resolves the allow-list source (config, or path > url > default
 //      URL).
 //   2. Reads or fetches the allow-list content.
-//   3. Sanitises it against a strict token allow-list.
+//   3. Sanitises it against a strict token allow-list, and merges in
+//      any 'extra_endpoints' entries (see extra-endpoints.mjs).
 //   4. Validates every allow-list hostname in DNS the way
 //      harden-runner's agent will, and applies the 'invalid_records'
 //      policy (see dns-policy.mjs).
@@ -48,6 +49,7 @@ import { httpsGet, readLocalFile } from './fetch.mjs';
 import { sanitise } from './sanitise.mjs';
 import { runConfigFlow } from './config-flow.mjs';
 import { enforceInvalidRecordsPolicy } from './dns-policy.mjs';
+import { applyExtraEndpoints } from './extra-endpoints.mjs';
 
 async function loadContent({ source, filePath, url, displayUrl }) {
   if (source === 'path') {
@@ -136,7 +138,11 @@ async function main() {
     ? runConfigFlow(inputs)
     : await runLegacyFlow(inputs);
 
-  const tokens = await enforceInvalidRecordsPolicy(inputs, loaded);
+  // Order: baseline, supplemental, extra. Merged before the DNS check,
+  // so a mistyped extra entry meets 'invalid_records' like any other.
+  const merged = applyExtraEndpoints(inputs, loaded);
+
+  const tokens = await enforceInvalidRecordsPolicy(inputs, merged);
 
   // The env var is what step-security/harden-runner's pre hook reads.
   exportEnv(inputs.envVarName, tokens.join(' '));

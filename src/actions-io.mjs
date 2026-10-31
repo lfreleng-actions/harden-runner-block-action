@@ -73,9 +73,9 @@ export function err(msg) {
   process.stderr.write(`${msg}\n`);
 }
 
-// Emit a titled annotation ('warning' or 'error'). Unlike err(), this
-// does not echo to stderr: callers log the detail separately, and an
-// annotation is the summary of it.
+// Emit a titled annotation ('notice', 'warning' or 'error'). Unlike
+// err(), this does not echo to stderr: callers log the detail
+// separately, and an annotation is the summary of it.
 export function annotate(level, title, msg) {
   emit(`::${level} title=${escapeProperty(title)}::${escapeWorkflowCommand(msg)}`);
 }
