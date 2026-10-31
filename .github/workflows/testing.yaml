@@ -290,6 +290,28 @@ jobs:
           # Trust rule, coordinate round-trip and merge semantics
           node --test tests/test_supplemental.mjs
 
+  ### Unit tests for the extra_endpoints helpers: parsing, refusals
+  ### and the added/redundant split. Listed here for the same reason
+  ### as the supplemental units above.
+  test-extra-endpoints-units:
+    name: "Extra endpoints: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run extra_endpoints unit tests"
+        shell: bash
+        run: |
+          # Grammar, comments, refusals and the merge report
+          node --test tests/test_extra_endpoints.mjs
+
   ### Unit tests for the pre-to-main output handover. The runner
   ### discards outputs written in the pre phase, so the action saves
   ### them as state and main publishes them; a regression would leave
@@ -1022,6 +1044,427 @@ jobs:
             exit 1
           fi
           echo "Required-supplemental assertion passed (exit ${rc}) ✅"
+
+  ### extra_endpoints with a local file: the merge, its outputs and
+  ### its report, then a comment-only value, which counts as unset.
+  test-extra-endpoints-local-file:
+    name: "Extra endpoints: local file"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run pre.mjs with extra endpoints"
+        shell: bash
+        env:
+          # Asserts the exact published list; keep live DNS out of it.
+          INPUT_INVALID_RECORDS: "ignore"
+          # One new entry, one the file already carries, and a repeat.
+          EXTRA: |
+            # Nordix registry, pending the supplemental list
+            registry.nordix.org:443
+            github.com:443
+            registry.nordix.org:443
+        run: |
+          # Merge inline entries into a local allow-list file
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/local-allow-list.txt"
+          cat > "$al_file" <<'EOF'
+          # Test allow-list (multi-line, comments allowed)
+          github.com:443
+          api.github.com:443
+          *.githubusercontent.com:443  # inline comment
+          objects.githubusercontent.com:443
+          EOF
+          failures=0
+
+          # run <label> <extra_endpoints> -> sets rc and the captured_*
+          run() {
+            captured_env="${RUNNER_TEMP}/env_$1"
+            captured_out="${RUNNER_TEMP}/out_$1"
+            captured_sum="${RUNNER_TEMP}/sum_$1"
+            captured_log="${RUNNER_TEMP}/log_$1"
+            : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+            rc=0
+            GITHUB_ENV="$captured_env" \
+            GITHUB_OUTPUT="$captured_out" \
+            GITHUB_STEP_SUMMARY="$captured_sum" \
+            INPUT_ALLOW_LIST_PATH="$al_file" \
+            INPUT_EXTRA_ENDPOINTS="$2" \
+              node src/pre.mjs > "$captured_log" 2>&1 || rc=$?
+          }
+          # expect <description> <command...>
+          expect() {
+            local desc="$1"
+            shift
+            if "$@"; then
+              echo "  ✅ ${desc}"
+            else
+              echo "  ❌ ${desc}"
+              sed 's/^::/ ::/' "$captured_log"
+              failures=$((failures + 1))
+            fi
+          }
+          exited() { [ "$rc" -eq "$1" ]; }
+          allow() {
+            grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+              | sed 's/^CONNECTION_ALLOW_LIST=//'
+          }
+          entries() { [ "$(allow | wc -w | tr -d ' ')" -eq "$1" ]; }
+          last_entry() { [ "$(allow | awk '{print $NF}')" = "$1" ]; }
+          output_is() { grep -qxF -- "$1" "$captured_out"; }
+          # GITHUB_OUTPUT is read in order: the last line for a key wins.
+          effective() { grep "^$1=" "$captured_out" | tail -1; }
+          effective_is() { [ "$(effective "$1")" = "$1=$2" ]; }
+          effective_words() {
+            [ "$(effective "$1" | sed "s/^$1=//" | wc -w | tr -d ' ')" \
+              -eq "$2" ]
+          }
+          unset_output() { ! grep -q "^$1=." "$captured_out"; }
+          no_leak() {
+            ! grep -qF -- "$1" "$captured_env" "$captured_out" "$captured_sum"
+          }
+          summary_has() { grep -qF -- "$1" "$captured_sum"; }
+          no_summary_block() { ! summary_has '(extra endpoints)'; }
+          logged() { grep -q -- "$1" "$captured_log"; }
+          notice_names() {
+            grep '^::notice title=Allow-list extended by extra_endpoints::' \
+              "$captured_log" | grep -qF -- "$1"
+          }
+          no_notice() { ! grep -q '^::notice' "$captured_log"; }
+
+          echo "extra entries merged after the file"
+          run merge "$EXTRA"
+          expect "exits 0" exited 0
+          expect "5 entries published" entries 5
+          expect "new entry last" last_entry 'registry.nordix.org:443'
+          expect "extra_count output" output_is 'extra_count=2'
+          expect "extra_added output" \
+            output_is 'extra_added=registry.nordix.org:443'
+          expect "count re-published" effective_is count 5
+          expect "allowed_endpoints re-published" \
+            effective_words allowed_endpoints 5
+          expect "comment text does not leak" no_leak 'Nordix registry'
+          # shellcheck disable=SC2016
+          expect "summary lists the added entry" \
+            summary_has '| `registry.nordix.org:443` | ➕ added |'
+          # shellcheck disable=SC2016
+          expect "summary lists the redundant entry" \
+            summary_has '| `github.com:443` | ↩️ redundant'
+          expect "summary states the total" \
+            summary_has 'Endpoints after merge: **5**'
+          expect "notice names the added entry" \
+            notice_names 'only through extra_endpoints: registry.nordix.org:443'
+          expect "notice names the redundant entry" \
+            notice_names 'already allowed (redundant): github.com:443'
+          expect "log names the added entry" \
+            logged 'added: registry.nordix.org:443'
+
+          echo "comment-only value counts as unset"
+          run comment '# nothing needed any more'
+          expect "exits 0" exited 0
+          expect "file list unchanged" entries 4
+          expect "file order unchanged" \
+            last_entry 'objects.githubusercontent.com:443'
+          expect "extra_count empty" unset_output extra_count
+          expect "extra_added empty" unset_output extra_added
+          expect "says it is unset" logged 'treating it as unset'
+          expect "no summary block" no_summary_block
+          expect "no notice" no_notice
+
+          if [ "$failures" -gt 0 ]; then
+            echo "Error: $failures extra_endpoints assertion(s) failed ❌"
+            exit 1
+          fi
+          echo "extra_endpoints local-file assertions passed ✅"
+
+  ### extra_endpoints with config, and with config plus a supplemental
+  ### list, which pins the merge order: baseline, supplemental, extra.
+  ###
+  ### The pinned lists are those test-supplemental-merge uses:
+  ### 886b0172 carries 168 endpoints, including github.com:443 but no
+  ### registry.nordix.org:443 and no extensions.duckdb.org entry, and
+  ### 7409b5a carries 171, adding registry.nordix.org:443.
+  test-extra-endpoints-config:
+    name: "Extra endpoints: config and supplemental"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run pre.mjs with config and extra endpoints"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          INPUT_EXTRA_ENDPOINTS: "extensions.duckdb.org:80"
+          # Historical lists with a stale entry: keep the counts exact.
+          INPUT_INVALID_RECORDS: "ignore"
+        run: |
+          # config plus one inline entry: 168 + 1
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/xcfg_env"
+          captured_out="${RUNNER_TEMP}/xcfg_out"
+          captured_sum="${RUNNER_TEMP}/xcfg_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          count=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//' | wc -w | tr -d ' ')
+          if [ "$count" -ne 169 ]; then
+            echo "Error: expected 169 endpoints, got $count ❌"
+            exit 1
+          fi
+          if [ "$(grep '^count=' "$captured_out" | tail -1)" != 'count=169' ]
+          then
+            echo "Error: effective count output != 169 ❌"
+            grep '^count=' "$captured_out" || true
+            exit 1
+          fi
+          merged=$(grep '^allowed_endpoints=' "$captured_out" | tail -1 \
+            | sed 's/^allowed_endpoints=//' | wc -w | tr -d ' ')
+          if [ "$merged" -ne 169 ]; then
+            echo "Error: effective allowed_endpoints has $merged ❌"
+            exit 1
+          fi
+          if ! grep -qxF 'extra_added=extensions.duckdb.org:80' \
+            "$captured_out"
+          then
+            echo "Error: extra_added wrong ❌"
+            grep '^extra_' "$captured_out" || true
+            exit 1
+          fi
+          echo "Config plus extra_endpoints assertions passed ✅"
+
+      - name: "Run pre.mjs with config, supplemental and extra endpoints"
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          INPUT_CONFIG: "lfreleng-actions@886b0172ba2292fb3f3c76a3219ce85ff62cba39"
+          # yamllint disable-line rule:line-length
+          INPUT_SUPPLEMENTAL_CONFIG: "lfreleng-actions@7409b5aad828768b12d015848ee2a4d4dbf34610"
+          # The supplemental list already grants the Nordix host.
+          INPUT_EXTRA_ENDPOINTS: |
+            registry.nordix.org:443
+            extensions.duckdb.org:80
+          INPUT_INVALID_RECORDS: "ignore"
+        run: |
+          # All three sources: 168 + 3 + 1
+          set -euo pipefail
+          captured_env="${RUNNER_TEMP}/xall_env"
+          captured_out="${RUNNER_TEMP}/xall_out"
+          captured_sum="${RUNNER_TEMP}/xall_sum"
+          : > "$captured_env" ; : > "$captured_out" ; : > "$captured_sum"
+          GITHUB_ENV="$captured_env" \
+          GITHUB_OUTPUT="$captured_out" \
+          GITHUB_STEP_SUMMARY="$captured_sum" \
+            node src/pre.mjs
+
+          value=$(grep '^CONNECTION_ALLOW_LIST=' "$captured_env" \
+            | sed 's/^CONNECTION_ALLOW_LIST=//')
+          count=$(printf '%s' "$value" | wc -w | tr -d ' ')
+          if [ "$count" -ne 172 ]; then
+            echo "Error: expected 172 endpoints, got $count ❌"
+            exit 1
+          fi
+          last=$(printf '%s' "$value" | awk '{print $NF}')
+          if [ "$last" != 'extensions.duckdb.org:80' ]; then
+            echo "Error: last entry is '$last', not the extra one ❌"
+            exit 1
+          fi
+          if [ "$(grep '^count=' "$captured_out" | tail -1)" != 'count=172' ]
+          then
+            echo "Error: effective count output != 172 ❌"
+            exit 1
+          fi
+          if ! grep -qxF 'extra_count=2' "$captured_out" \
+            || ! grep -qxF 'extra_added=extensions.duckdb.org:80' \
+              "$captured_out"
+          then
+            echo "Error: extra_count / extra_added wrong ❌"
+            grep '^extra_' "$captured_out" || true
+            exit 1
+          fi
+          # shellcheck disable=SC2016
+          if ! grep -qF '| `registry.nordix.org:443` | ↩️ redundant' \
+            "$captured_sum"
+          then
+            echo "Error: supplemental entry not reported as redundant ❌"
+            cat "$captured_sum"
+            exit 1
+          fi
+          echo "Three-source merge assertions passed (172 endpoints) ✅"
+
+  ### extra_endpoints refusals. Each must fail the step, name the input
+  ### and the token, and publish no allow-list.
+  test-extra-endpoints-refusals:
+    name: "Extra endpoints: refusals"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Refuse tokens outside the grammar"
+        shell: bash
+        env:
+          # A valid entry, then a line that would be an env assignment.
+          INJECTION: |
+            a.example.com:443
+            FOO=bar
+        run: |
+          # Refuse tokens outside the grammar
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/allow-list.txt"
+          printf '%s\n' 'github.com:443' > "$al_file"
+          failures=0
+
+          # refuse <token named in the message> <extra_endpoints> [url]
+          # With a url, the source is unreachable: the step must fail
+          # on the token, before any fetch.
+          refuse() {
+            local token="$1" extra="$2" url="${3:-}"
+            local env_f="${RUNNER_TEMP}/ref_env" out_f="${RUNNER_TEMP}/ref_out"
+            local log_f="${RUNNER_TEMP}/ref_log"
+            local path="$al_file"
+            if [ -n "$url" ]; then path=""; fi
+            : > "$env_f" ; : > "$out_f"
+            rc=0
+            GITHUB_ENV="$env_f" \
+            GITHUB_OUTPUT="$out_f" \
+            GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/ref_sum" \
+            INPUT_ALLOW_LIST_PATH="$path" \
+            INPUT_URL="$url" \
+            INPUT_EXTRA_ENDPOINTS="$extra" \
+              node src/pre.mjs > "$log_f" 2>&1 || rc=$?
+            if [ "$rc" -ne 0 ] \
+              && grep -qF "Input 'extra_endpoints' rejected token '${token}'" \
+                "$log_f" \
+              && ! grep -q '^CONNECTION_ALLOW_LIST=' "$env_f" \
+              && ! grep -q 'Failed to fetch' "$log_f"
+            then
+              echo "  ✅ refused '${token}'"
+            else
+              echo "  ❌ '${token}' (exit ${rc})"
+              sed 's/^::/ ::/' "$log_f"
+              failures=$((failures + 1))
+            fi
+          }
+
+          refuse 'evil.com:443;whoami' 'evil.com:443;whoami'
+          refuse '*' '*'
+          refuse '*:443' '*:443'
+          refuse 'evil.com:99999' 'evil.com:99999'
+          refuse 'FOO=bar' "$INJECTION"
+          refuse 'evil.com:443;whoami' 'evil.com:443;whoami' \
+            'https://example.invalid/allow_list.txt'
+
+          if [ "$failures" -gt 0 ]; then
+            echo "Error: $failures refusal assertion(s) failed ❌"
+            exit 1
+          fi
+          echo "extra_endpoints refusal assertions passed ✅"
+
+  ### An extra entry meets the invalid_records policy like any other.
+  ### 'does-not-exist.invalid' is guaranteed NXDOMAIN by RFC 6761.
+  test-extra-endpoints-dns:
+    name: "Extra endpoints: DNS check"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Check an unresolvable extra entry"
+        shell: bash
+        run: |
+          # Check an unresolvable extra entry under filter and error
+          set -euo pipefail
+          al_file="${RUNNER_TEMP}/dns-allow-list.txt"
+          printf '%s\n' 'github.com:443' '*.githubusercontent.com:443' \
+            > "$al_file"
+          bad='does-not-exist.invalid:443'
+          failures=0
+
+          # run <mode> -> sets rc and the captured_* files
+          run() {
+            captured_env="${RUNNER_TEMP}/env_$1"
+            captured_out="${RUNNER_TEMP}/out_$1"
+            captured_log="${RUNNER_TEMP}/log_$1"
+            : > "$captured_env" ; : > "$captured_out"
+            rc=0
+            GITHUB_ENV="$captured_env" \
+            GITHUB_OUTPUT="$captured_out" \
+            GITHUB_STEP_SUMMARY="${RUNNER_TEMP}/sum_$1" \
+            INPUT_ALLOW_LIST_PATH="$al_file" \
+            INPUT_EXTRA_ENDPOINTS="$bad" \
+            INPUT_INVALID_RECORDS="$1" \
+              node src/pre.mjs > "$captured_log" 2>&1 || rc=$?
+          }
+          expect() {
+            local desc="$1"
+            shift
+            if "$@"; then
+              echo "  ✅ ${desc}"
+            else
+              echo "  ❌ ${desc}"
+              sed 's/^::/ ::/' "$captured_log"
+              failures=$((failures + 1))
+            fi
+          }
+          exited() { [ "$rc" -eq "$1" ]; }
+          failed() { [ "$rc" -ne 0 ]; }
+          allow() { grep '^CONNECTION_ALLOW_LIST=' "$captured_env"; }
+          listed() { allow | grep -qF -- "$1"; }
+          unlisted() { ! listed "$1"; }
+          unpublished() { ! allow > /dev/null; }
+          output_is() { grep -qxF -- "$1" "$captured_out"; }
+
+          echo "filter (the default)"
+          run filter
+          expect "exits 0" exited 0
+          expect "extra entry dropped" unlisted "$bad"
+          expect "file entries kept" \
+            listed 'github.com:443 *.githubusercontent.com:443'
+          expect "invalid_records names it" \
+            output_is "invalid_records=$bad"
+          expect "extra_added still lists it" output_is "extra_added=$bad"
+
+          echo "error"
+          run error
+          expect "exits non-zero" failed
+          expect "allow-list not published" unpublished
+
+          if [ "$failures" -gt 0 ]; then
+            echo "Error: $failures DNS assertion(s) failed ❌"
+            exit 1
+          fi
+          echo "extra_endpoints DNS assertions passed ✅"
 
   ### Config mutual-exclusion. Asserts that combining 'config' with a
   ### legacy source input (org) fails fast with a clear error, so the

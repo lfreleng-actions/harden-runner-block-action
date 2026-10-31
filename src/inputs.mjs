@@ -7,6 +7,7 @@ import { fail, getInput, info, redactUrl } from './actions-io.mjs';
 import { AGENT_MODES } from './agent-ready.mjs';
 import { EGRESS_POLICY_ENV } from './dns-policy.mjs';
 import { MODES } from './dns-validate.mjs';
+import { INPUT_NAME as EXTRA_INPUT, parseExtraEndpoints } from './extra-endpoints.mjs';
 import { checkSupplementalTrust } from './supplemental.mjs';
 
 // GitHub usernames/org names are 1–39 characters, alphanumerics and
@@ -53,6 +54,23 @@ function nonNegativeInt(name, value) {
     fail(`Input '${name}' must be a whole number of seconds (received '${value}') ❌`);
   }
   return Number(value);
+}
+
+// Checked with the other inputs, before any fetch, so a mistyped entry
+// fails the step at no network cost. Newlines are allowed here: only
+// validated tokens are ever written anywhere.
+function validateExtraEndpoints(raw) {
+  const parsed = parseExtraEndpoints(raw);
+  if (parsed.error) {
+    fail(`${parsed.error} ❌`);
+  }
+  if (parsed.tokens.length === 0 && raw.trim() !== '') {
+    info(
+      `Input '${EXTRA_INPUT}' holds no entries once comments are ` +
+      'stripped; treating it as unset ℹ️',
+    );
+  }
+  return parsed.tokens;
 }
 
 // Newlines in these inputs would let a caller inject additional
@@ -143,6 +161,7 @@ export function readInputs() {
     disableGhTelemetry:
       getInput('disable_gh_telemetry', 'true') !== 'false',
     envVarName: getInput('env_var_name', 'CONNECTION_ALLOW_LIST'),
+    extraEndpoints: validateExtraEndpoints(getInput(EXTRA_INPUT)),
     invalidRecords: getInput('invalid_records', 'filter').trim().toLowerCase(),
     agentTimeout: nonNegativeInt('agent_timeout', getInput('agent_timeout', '120').trim()),
     agentNotReady: getInput('agent_not_ready', 'error').trim().toLowerCase(),

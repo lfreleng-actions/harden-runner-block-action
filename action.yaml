@@ -155,6 +155,16 @@ inputs:
       blocked connection.
     required: false
     default: "false"
+  extra_endpoints:
+    description: >
+      Extra allowed endpoints, written inline: host[:port] tokens
+      separated by spaces or newlines, in the allow-list file format
+      ('#' comments allowed). Merged into the allow-list the action
+      loads, after any supplemental list, rather than replacing it.
+      Meant for short-lived fixes while a list change goes through
+      review. Empty adds nothing.
+    required: false
+    default: ""
   invalid_records:
     description: >
       What to do with allow-list entries whose hostname does not
@@ -207,9 +217,10 @@ outputs:
   allowed_endpoints:
     description: >
       The sanitised, space-separated allowed-endpoints allow-list
-      string. When 'supplemental_config' contributed endpoints, this is
-      the merged, de-duplicated set rather than the baseline alone, so
-      it always describes what the job actually allows.
+      string. When 'supplemental_config' or 'extra_endpoints'
+      contributed endpoints, this is the merged, de-duplicated set
+      rather than the baseline alone, so it always describes what the
+      job actually allows.
   source:
     description: >
       The source from which the action loaded the allow-list: 'path',
@@ -262,6 +273,18 @@ outputs:
       this is the only audit trail available, since the spec names a
       branch and the branch moves. Empty when the feature is unused or
       the list was absent.
+  extra_count:
+    description: >
+      Number of distinct entries in 'extra_endpoints'. Empty when the
+      input is unset.
+  extra_added:
+    description: >
+      Space-separated entries that 'extra_endpoints' added, which
+      neither the baseline nor a supplemental list carried: the
+      endpoints allowed only because of the inline entries. Describes
+      the merge, before the DNS check; an entry that check removes
+      also appears in 'invalid_records' or 'indeterminate_records'.
+      Empty when the input added nothing or is unset.
   invalid_records:
     description: >
       Space-separated allow-list entries whose hostname definitively

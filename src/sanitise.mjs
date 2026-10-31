@@ -27,7 +27,7 @@ const MAX_PORT = 65535;
 // Drop the BOM, strip '#' comments (full-line and inline, taking the
 // preceding whitespace with them), then collapse all remaining
 // whitespace to single spaces.
-function normalise(raw) {
+export function normalise(raw) {
   return raw
     .replace(/^\uFEFF/, '')
     .replace(/(^|[ \t])#[^\r\n]*/gm, '$1')
@@ -36,16 +36,23 @@ function normalise(raw) {
 }
 
 // The regex admits 1-5 digits; narrow that to the real TCP/UDP range.
-function checkPort(token) {
+function portInRange(token) {
   const colon = token.lastIndexOf(':');
-  if (colon === -1) return;
+  if (colon === -1) return true;
   const port = Number.parseInt(token.slice(colon + 1), 10);
-  if (!Number.isFinite(port) || port < MIN_PORT || port > MAX_PORT) {
-    fail(
-      `Rejected allow-list token '${token}' ` +
-      `(port out of range ${MIN_PORT}-${MAX_PORT}) ❌`,
-    );
+  return Number.isFinite(port) && port >= MIN_PORT && port <= MAX_PORT;
+}
+
+// Why a single token is not a valid allow-list entry, or null when it
+// is. Callers phrase the refusal; the grammar lives here alone.
+export function tokenProblem(token) {
+  if (!TOKEN_RE.test(token)) {
+    return 'must be host[:port] or *.host[:port]';
   }
+  if (!portInRange(token)) {
+    return `port out of range ${MIN_PORT}-${MAX_PORT}`;
+  }
+  return null;
 }
 
 // Parse and validate raw allow-list text, returning a single
@@ -59,13 +66,10 @@ export function sanitise(raw) {
   }
   const tokens = text.split(' ');
   for (const token of tokens) {
-    if (!TOKEN_RE.test(token)) {
-      fail(
-        `Rejected allow-list token '${token}' ` +
-        '(must be host[:port] or *.host[:port]) ❌',
-      );
+    const problem = tokenProblem(token);
+    if (problem) {
+      fail(`Rejected allow-list token '${token}' (${problem}) ❌`);
     }
-    checkPort(token);
   }
   return tokens.join(' ');
 }

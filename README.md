@@ -121,6 +121,7 @@ steps:
 | `supplemental_config`   | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.                                                                                |
 | `supplemental_unpinned` | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                              |
 | `supplemental_required` | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                         |
+| `extra_endpoints`       | No       | _empty_                 | Extra endpoints written inline: `host[:port]` tokens in the allow-list file format, merged after any supplemental list. For short-lived fixes. See [Inline extra endpoints](#inline-extra-endpoints).                                    |
 | `invalid_records`       | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                |
 | `agent_timeout`         | No       | `120`                   | Seconds the main step waits for harden-runner's agent to report that enforcement is in place. `0` disables the wait. See [Waiting for the agent](#waiting-for-the-agent).                                                                |
 | `agent_not_ready`       | No       | `error`                 | What to do when the agent never reports ready: `error` fails the step, `warning` annotates and continues. See [Waiting for the agent](#waiting-for-the-agent).                                                                           |
@@ -131,27 +132,29 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                    | Description                                                                                                                                  |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowed_endpoints`     | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list contributed endpoints.   |
-| `source`                | One of `path`, `url`, `default-url`, `config`.                                                                                               |
-| `resolved_url`          | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead). |
-| `resolved_host_org`     | Host org that supplied the allow-list (`config` mode).                                                                                       |
-| `resolved_repo`         | Repository that supplied the allow-list (`config` mode).                                                                                     |
-| `resolved_ref`          | Git ref requested for the `config` fetch.                                                                                                    |
-| `resolved_sha`          | Exact commit SHA the `config` ref resolved to.                                                                                               |
-| `resolved_path`         | In-repo path of the matched `config` file.                                                                                                   |
-| `matched_candidate`     | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                          |
-| `supplemental_source`   | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                        |
-| `supplemental_count`    | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                  |
-| `supplemental_sha`      | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                               |
-| `invalid_records`       | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                              |
-| `invalid_count`         | Number of entries in `invalid_records`.                                                                                                      |
-| `indeterminate_records` | Space-separated entries that reached no DNS verdict after retries.                                                                           |
-| `indeterminate_count`   | Number of entries in `indeterminate_records`.                                                                                                |
-| `egress_policy`         | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.           |
-| `agent_status`          | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.     |
-| `agent_wait_ms`         | Milliseconds the main step waited for the agent.                                                                                             |
+| Name                    | Description                                                                                                                                                     |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_endpoints`     | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list or `extra_endpoints` contributed endpoints. |
+| `source`                | One of `path`, `url`, `default-url`, `config`.                                                                                                                  |
+| `resolved_url`          | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead).                    |
+| `resolved_host_org`     | Host org that supplied the allow-list (`config` mode).                                                                                                          |
+| `resolved_repo`         | Repository that supplied the allow-list (`config` mode).                                                                                                        |
+| `resolved_ref`          | Git ref requested for the `config` fetch.                                                                                                                       |
+| `resolved_sha`          | Exact commit SHA the `config` ref resolved to.                                                                                                                  |
+| `resolved_path`         | In-repo path of the matched `config` file.                                                                                                                      |
+| `matched_candidate`     | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                                             |
+| `supplemental_source`   | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                                           |
+| `supplemental_count`    | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                                     |
+| `supplemental_sha`      | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                                                  |
+| `extra_count`           | Distinct entries in `extra_endpoints`. Empty when unset.                                                                                                        |
+| `extra_added`           | Space-separated entries `extra_endpoints` added that no loaded list carried, before the DNS check. Empty when none or unset.                                    |
+| `invalid_records`       | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                                                 |
+| `invalid_count`         | Number of entries in `invalid_records`.                                                                                                                         |
+| `indeterminate_records` | Space-separated entries that reached no DNS verdict after retries.                                                                                              |
+| `indeterminate_count`   | Number of entries in `indeterminate_records`.                                                                                                                   |
+| `egress_policy`         | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.                              |
+| `agent_status`          | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.                        |
+| `agent_wait_ms`         | Milliseconds the main step waited for the agent.                                                                                                                |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -740,6 +743,70 @@ pastes straight back into `supplemental_config`.
 sole audit trail: the spec names a branch, and the branch moves. The
 step summary carries the same detail in its own block.
 
+## Inline extra endpoints
+
+A job blocked by one missing host needs a quick fix, and changing a
+list file is not quick: the change needs review and, for a pinned
+list, a ref bump in every caller. `extra_endpoints` takes the missing
+entries inline, in the calling workflow, and merges them into whichever
+allow-list the action loads, from any source:
+
+```yaml
+    with:
+      config: 'lfreleng-actions@v0.11.1'
+      extra_endpoints: |
+        # DuckDB extensions, until our supplemental list carries them
+        extensions.duckdb.org:80
+```
+
+Use it for an emergency or a short-lived fix while the proper change
+goes through review. Standing needs belong elsewhere: a
+project's own endpoints belong in a
+[supplemental list](#supplemental-per-org-allow-lists), and ones every
+project needs belong in the shared baseline.
+
+The value uses the [allow-list file format](#allow-list-file-format):
+`host[:port]` tokens separated by spaces or newlines, with `#`
+comments. The action checks it with the other inputs, before fetching
+anything, so a bad token fails the step at once and the message names
+`extra_endpoints`. The value may span lines, unlike the other source
+inputs, because the action never writes the raw value anywhere:
+validated tokens, joined with spaces, are all that reach the
+environment, the outputs or the step summary. A value with no tokens
+left once the action strips comments counts as unset, so commenting
+out the last entry turns the feature off.
+
+The merge order is baseline, then supplemental, then extra, with
+duplicates removed and first-seen order kept. The merge happens before
+the [DNS check](#dns-checks-on-the-allow-list), so a mistyped extra
+entry meets `invalid_records` like any other: under the default
+`filter` the action drops it with a warning and block mode stays on.
+
+### Why not edit `allowed-endpoints` by hand
+
+Appending hosts to the harden-runner step,
+`allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }} host:443"`, skips
+the token grammar and the DNS check. One entry that does not resolve
+makes harden-runner's agent revert block mode, and the action's main
+step then fails the job. It also leaves no record: the
+`allowed_endpoints` output and the step summary no longer describe
+what the job allows.
+
+### Keeping band-aids visible
+
+Every invocation logs each entry the input adds, and each one the
+loaded lists already carry. The invocation that writes the step
+summary (`allow_list_summary: true`) also adds an "extra endpoints"
+block listing both, and raises a notice annotation. An entry reported
+as redundant shows the band-aid can come out: the supplemental list or
+the baseline now carries it. The `extra_added` output lists the
+endpoints that the job allows because of this input alone.
+
+> [!NOTE]
+> A caller of a reusable workflow does not own the action's step, so
+> the reusable workflow has to expose an input and pass it through to
+> `extra_endpoints`.
+
 ## Allow-list file format
 
 The allow-list must consist of `host[:port]` tokens separated by
@@ -801,6 +868,9 @@ small `main:` hook:
    - **Sanitise** the content (drop BOM/comments, collapse
      whitespace, check every token against a strict allow-list and
      port range).
+   - **Merge** any `extra_endpoints` entries, which input validation
+     already checked against the same grammar, after the baseline and
+     any supplemental list.
    - **Check** every allow-list hostname over DNS-over-HTTPS and
      apply the `invalid_records` policy.
    - **Publish** the result as `$<env_var_name>` (via
@@ -821,23 +891,25 @@ runner via the documented `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
 `$GITHUB_STEP_SUMMARY` files and `::error::` workflow commands. No
 build pipeline, no bundling, no `dist/` directory.
 
-The action spans ten single-purpose ES modules, which the runner
+The action spans twelve single-purpose ES modules, which the runner
 loads directly (relative imports, no resolution step):
 
 <!-- markdownlint-disable MD013 -->
 
-| Module                 | Responsibility                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------ |
-| `src/pre.mjs`          | Pre entrypoint: orchestrates the steps above and hands the outputs over to `main`.   |
-| `src/main.mjs`         | Main entrypoint: publishes the outputs `pre` handed over.                            |
-| `src/inputs.mjs`       | Reads and validates inputs, resolves which source to use.                            |
-| `src/fetch.mjs`        | Size-capped HTTPS fetch (redirects, timeout) and local file read.                    |
-| `src/sanitise.mjs`     | Token parsing and strict host/port validation.                                       |
-| `src/config-flow.mjs`  | Drives the shared Python resolver for the `config` input, and merges a supplemental. |
-| `src/supplemental.mjs` | Pure helpers for the supplemental list: spec parsing, the trust rule, the merge.     |
-| `src/dns-validate.mjs` | DoH lookups, retries and verdicts, and the per-mode decision. Pure apart from fetch. |
-| `src/dns-policy.mjs`   | Applies `invalid_records`: outputs, env vars, annotations and step summary.          |
-| `src/actions-io.mjs`   | The runner protocol: workflow commands, outputs and their pre-to-main handover.      |
+| Module                    | Responsibility                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `src/pre.mjs`             | Pre entrypoint: orchestrates the steps above and hands the outputs over to `main`.   |
+| `src/main.mjs`            | Main entrypoint: publishes the outputs `pre` handed over.                            |
+| `src/inputs.mjs`          | Reads and validates inputs, resolves which source to use.                            |
+| `src/fetch.mjs`           | Size-capped HTTPS fetch (redirects, timeout) and local file read.                    |
+| `src/sanitise.mjs`        | Token parsing and strict host/port validation.                                       |
+| `src/config-flow.mjs`     | Drives the shared Python resolver for the `config` input, and merges a supplemental. |
+| `src/supplemental.mjs`    | Pure helpers for the supplemental list: spec parsing, the trust rule, the merge.     |
+| `src/extra-endpoints.mjs` | Parses and merges `extra_endpoints`, and reports what it added.                      |
+| `src/dns-validate.mjs`    | DoH lookups, retries and verdicts, and the per-mode decision. Pure apart from fetch. |
+| `src/dns-policy.mjs`      | Applies `invalid_records`: outputs, env vars, annotations and step summary.          |
+| `src/actions-io.mjs`      | The runner protocol: workflow commands, outputs and their pre-to-main handover.      |
+| `src/agent-ready.mjs`     | Waits in `main` for harden-runner's agent to report enforcement in place.            |
 
 <!-- markdownlint-enable MD013 -->
 
