@@ -33,5 +33,18 @@ a pull request, not the full set:
 
 ## Repository specifics
 
-None: working in this repository needs nothing beyond the organisation
-guidelines.
+This repository owns the `config` resolver; no other repository
+carries a copy. `src/resolve_config_source.py` is its entry point;
+the grammar, fetch, sanitisation and output code live in the sibling
+`src/resolve_config_*.py` modules.
+
+- `resolve-config/action.yaml` exposes the resolver to
+  `lfreleng-actions/python-audit-action`, which pins it by commit SHA
+  and takes updates through Dependabot. The resolver's CLI arguments,
+  the keys `write_github_output` emits, and the sub-action's inputs
+  and outputs are a public interface: changing any of them is a
+  breaking change for that consumer and needs a release before
+  python-audit-action can adopt it.
+- `lfreleng-actions/gha-workflow-linter` ports the grammar
+  (`src/resolve_config_grammar.py`) in its `allow_list_spec.py`. A
+  change to the `config` grammar needs an issue raised there.
