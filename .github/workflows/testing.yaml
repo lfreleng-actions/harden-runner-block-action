@@ -260,6 +260,159 @@ jobs:
           fi
           echo "Config-mode assertions passed ($count endpoints) ✅"
 
+  ### The resolve-config composite sub-action, called as a local
+  ### action. A composite action has no pre: hook, so the local-action
+  ### limitation described at the top of this file does not apply.
+  ### Pinned to the same commit as test-config-mode; workflow_org is
+  ### set so a fork's owner does not change which candidate matches.
+  ### The steps keep the './' form, which runs the checked-out tree
+  ### through GITHUB_ACTION_PATH exactly as a consumer's download
+  ### lays it out; zizmor's self-repository audit is waived for them.
+  test-resolve-config:
+    name: "Sub-action: resolve-config"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Endpoints from the harden-runner family"
+        id: endpoints
+        uses: ./resolve-config # zizmor: ignore[self-repository]
+        with:
+          # yamllint disable-line rule:line-length
+          config: "lfreleng-actions@9e51be0a6ca2c2ce11d418e87b4a425d86a329fa"
+          family: "harden-runner"
+          mode: "endpoints"
+          workflow_org: "lfreleng-actions"
+          summary_title: "resolve-config: endpoints"
+
+      - name: "Check endpoints outputs"
+        shell: bash
+        env:
+          FOUND: ${{ steps.endpoints.outputs.found }}
+          SOURCE: ${{ steps.endpoints.outputs.source }}
+          RESOLVED_SHA: ${{ steps.endpoints.outputs.resolved_sha }}
+          MATCHED: ${{ steps.endpoints.outputs.matched_candidate }}
+          ENTRIES: ${{ steps.endpoints.outputs.entries }}
+        run: |
+          # Check endpoints outputs
+          set -euo pipefail
+          [ "$FOUND" = "true" ] || { echo "Error: found=$FOUND ❌"; exit 1; }
+          if [ "$SOURCE" != "config" ]; then
+            echo "Error: source=$SOURCE ❌"
+            exit 1
+          fi
+          if ! [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Error: resolved_sha not a 40-char commit SHA ❌"
+            exit 1
+          fi
+          if [ "$MATCHED" != "org-specific" ]; then
+            echo "Error: matched_candidate=$MATCHED ❌"
+            exit 1
+          fi
+          count=$(wc -w <<< "$ENTRIES" | tr -d ' ')
+          if [ "$count" -lt 10 ]; then
+            echo "Error: expected >=10 endpoints, got $count ❌"
+            exit 1
+          fi
+          echo "Endpoints case passed ($count entries) ✅"
+
+      - name: "Vulnerability IDs from the python-audit family"
+        id: vulns
+        uses: ./resolve-config # zizmor: ignore[self-repository]
+        with:
+          # yamllint disable-line rule:line-length
+          config: "lfreleng-actions@9e51be0a6ca2c2ce11d418e87b4a425d86a329fa"
+          family: "python-audit"
+          mode: "vulns"
+          workflow_org: "lfreleng-actions"
+          summary: "false"
+
+      - name: "Check vulns outputs"
+        shell: bash
+        env:
+          FOUND: ${{ steps.vulns.outputs.found }}
+          ENTRIES: ${{ steps.vulns.outputs.entries }}
+        run: |
+          # Check vulns outputs
+          set -euo pipefail
+          [ "$FOUND" = "true" ] || { echo "Error: found=$FOUND ❌"; exit 1; }
+          for id in GHSA-4xh5-x5gv-qwph PYSEC-2025-183; do
+            if ! grep -qw -- "$id" <<< "$ENTRIES"; then
+              echo "Error: entries lacks $id ❌"
+              exit 1
+            fi
+          done
+          echo "Vulns case passed ✅"
+
+      - name: "Soft miss at an auto-derived path"
+        id: miss
+        uses: ./resolve-config # zizmor: ignore[self-repository]
+        with:
+          # yamllint disable-line rule:line-length
+          config: "lfreleng-actions@9e51be0a6ca2c2ce11d418e87b4a425d86a329fa"
+          family: "no-such-family"
+          mode: "vulns"
+          workflow_org: "lfreleng-actions"
+
+      - name: "Check soft-miss outputs"
+        shell: bash
+        env:
+          FOUND: ${{ steps.miss.outputs.found }}
+          COUNT: ${{ steps.miss.outputs.count }}
+        run: |
+          # Check soft-miss outputs
+          set -euo pipefail
+          [ "$FOUND" = "false" ] || { echo "Error: found=$FOUND ❌"; exit 1; }
+          [ "$COUNT" = "0" ] || { echo "Error: count=$COUNT ❌"; exit 1; }
+          echo "Soft-miss case passed ✅"
+
+      - name: "Missing explicit path fails"
+        id: explicit_miss
+        continue-on-error: true
+        uses: ./resolve-config # zizmor: ignore[self-repository]
+        with:
+          # yamllint disable-line rule:line-length
+          config: "lfreleng-actions//no/such/file.txt@9e51be0a6ca2c2ce11d418e87b4a425d86a329fa"
+          family: "python-audit"
+          mode: "vulns"
+          workflow_org: "lfreleng-actions"
+
+      - name: "Unknown mode fails"
+        id: bad_mode
+        continue-on-error: true
+        uses: ./resolve-config # zizmor: ignore[self-repository]
+        with:
+          # yamllint disable-line rule:line-length
+          config: "lfreleng-actions@9e51be0a6ca2c2ce11d418e87b4a425d86a329fa"
+          family: "python-audit"
+          mode: "bogus"
+          workflow_org: "lfreleng-actions"
+
+      - name: "Check the failing cases failed"
+        shell: bash
+        env:
+          EXPLICIT_MISS: ${{ steps.explicit_miss.outcome }}
+          BAD_MODE: ${{ steps.bad_mode.outcome }}
+        run: |
+          # Check the failing cases failed
+          set -euo pipefail
+          if [ "$EXPLICIT_MISS" != "failure" ]; then
+            echo "Error: missing explicit path outcome=$EXPLICIT_MISS ❌"
+            exit 1
+          fi
+          if [ "$BAD_MODE" != "failure" ]; then
+            echo "Error: unknown mode outcome=$BAD_MODE ❌"
+            exit 1
+          fi
+          echo "Failure cases passed ✅"
+
   ### Unit tests for the supplemental helpers.
   ###
   ### These live here rather than in resolver-tests.yaml, which is
