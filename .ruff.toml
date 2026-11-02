@@ -20,7 +20,7 @@
 # those two is worthwhile but is a code change, not a configuration one:
 #
 #   - "B" adds one B904 (raise-without-from) site in
-#     src/resolve_config_source.py, which needs a judgement about which
+#     src/resolve_config_fetch.py, which needs a judgement about which
 #     exception context to preserve.
 #   - "I" flags the import block in the test modules, which deliberately
 #     call sys.path.insert() before importing the module under test.

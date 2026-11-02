@@ -19,6 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import resolve_config_fetch as rcs_fetch  # noqa: E402
 import resolve_config_source as rcs  # noqa: E402
 
 
@@ -244,7 +245,7 @@ def _install_fake_git(
     sizes=None,
     trees=None,
 ):
-    """Stub rcs._run_git so fetch_file() runs without touching git/network.
+    """Stub rcs_fetch._run_git so fetch_file() runs without touching git/network.
 
     files maps an in-repo path to its content; sizes optionally overrides
     the reported blob size; trees is a set of paths reported as 'tree'
@@ -296,7 +297,7 @@ def _install_fake_git(
             return cp(0, "".join(f"{p}\n" for p in listed))
         return cp(0)
 
-    monkeypatch.setattr(rcs, "_run_git", fake_run_git)
+    monkeypatch.setattr(rcs_fetch, "_run_git", fake_run_git)
     return calls
 
 
@@ -463,7 +464,7 @@ def _install_slow_fetch(monkeypatch, fetch_seconds):
     """
     now = [100.0]
     fetch_timeouts: list[float] = []
-    stub = rcs._run_git
+    stub = rcs_fetch._run_git
 
     def slow_run_git(args, timeout):
         if "fetch" in args:
@@ -472,7 +473,7 @@ def _install_slow_fetch(monkeypatch, fetch_seconds):
             now[0] += fetch_seconds
         return stub(args, timeout)
 
-    monkeypatch.setattr(rcs, "_run_git", slow_run_git)
+    monkeypatch.setattr(rcs_fetch, "_run_git", slow_run_git)
     return now, fetch_timeouts
 
 
