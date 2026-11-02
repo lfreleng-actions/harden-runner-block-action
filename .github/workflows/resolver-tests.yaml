@@ -5,7 +5,7 @@
 # Runs the config-resolver unit tests (pytest).
 #
 # The action's main code path is exercised via node (see
-# testing.yaml), but the shared src/resolve_config_source.py module
+# testing.yaml), but the src/resolve_config_source.py module
 # carries its own pytest suite that pins the `config` grammar and the
 # mode-selected sanitisers. A companion suite
 # (test_allow_list_format_equivalence.py) pins the invariant that the

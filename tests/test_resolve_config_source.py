@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║  SYNCHRONISED FILE — DO NOT EDIT IN ISOLATION                      ║
-# ║                                                                    ║
-# ║  Mirrored across:                                                  ║
-# ║    - lfreleng-actions/python-audit-action       : tests/...        ║
-# ║    - lfreleng-actions/harden-runner-block-action: tests/...        ║
-# ║                                                                    ║
-# ║  These tests pin the shared `config` grammar. Changes must land    ║
-# ║  as paired PRs in both repositories together with the module.      ║
-# ╚══════════════════════════════════════════════════════════════════╝
+# These tests pin the `config` grammar of the resolver this repository
+# owns. The resolve-config sub-action exposes that grammar to
+# python-audit-action, which pins it, so a change that alters what
+# these tests accept is a breaking change for that consumer.
 #
 # Unit tests for resolve_config_source: parsing, resolution defaults,
 # the search-candidate chain, the mode-selected sanitisers, and

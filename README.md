@@ -281,10 +281,10 @@ current repository alone, so pass a PAT or GitHub App token here:
 > `config` resolution uses the runner's preinstalled `python3` (the
 > resolver needs no third-party packages) and shells out to `git` for
 > the fetch. GitHub-hosted runners ship both; on self-hosted runners
-> `python3` and `git` must sit on `PATH`. Both repositories mirror the
-> shared parser `src/resolve_config_source.py`, and changes must land
-> as paired pull requests across `harden-runner-block-action` and
-> `python-audit-action`.
+> `python3` and `git` must sit on `PATH`. This repository owns the
+> resolver, `src/resolve_config_source.py`, and python-audit-action
+> uses it through the pinned
+> [`resolve-config` sub-action](#the-resolve-config-sub-action).
 
 ### Troubleshooting a failed config fetch
 

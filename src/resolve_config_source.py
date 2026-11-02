@@ -1,23 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║  SYNCHRONISED FILE — DO NOT EDIT IN ISOLATION                      ║
-# ║                                                                    ║
-# ║  This file is mirrored, byte-for-byte, across two repositories:    ║
-# ║    - lfreleng-actions/python-audit-action       : src/...          ║
-# ║    - lfreleng-actions/harden-runner-block-action: src/...          ║
-# ║                                                                    ║
-# ║  The `config` input grammar and its resolution/fetch/sanitise      ║
-# ║  behaviour MUST stay identical in both actions. Any change here    ║
-# ║  has to be raised as PAIRED pull requests in BOTH repositories.    ║
-# ║  A CI check in each repo diffs this file against the other repo's  ║
-# ║  copy and fails the build if they diverge.                         ║
-# ║                                                                    ║
-# ║  The only action-specific behaviour is selected at call time via   ║
-# ║  the --mode flag (endpoints | vulns); the module itself carries    ║
-# ║  no per-action constants.                                          ║
-# ╚══════════════════════════════════════════════════════════════════╝
+# This repository owns the config resolver; no other repository carries
+# a copy. It has two callers:
+#   - src/config-flow.mjs, this action's own code path (--mode endpoints)
+#   - the resolve-config sub-action (resolve-config/action.yaml), which
+#     python-audit-action pins by commit SHA (--mode vulns)
+#
+# The CLI arguments and the keys write_github_output() emits form the
+# sub-action's contract: changing either is a breaking change for
+# python-audit-action.
+#
+# The only caller-specific behaviour is selected at call time via the
+# --mode flag (endpoints | vulns); the module itself carries no
+# per-action constants.
 #
 # resolve_config_source.py
 #
@@ -103,9 +99,7 @@ class ResolveError(Exception):
     """A hard error that must fail the action."""
 
 
-# ---------------------------------------------------------------------
 # Parsing
-# ---------------------------------------------------------------------
 
 
 def split_comment(value: str) -> tuple[str, str]:
@@ -188,7 +182,7 @@ def resolve(
 
     parts = parse_config(spec)
 
-    # --- host-org and repo (the part before '//') ---
+    # host-org and repo (the part before '//')
     repospec = parts["repospec"].strip("/")
     if repospec == "":
         host_org = workflow_org
@@ -214,7 +208,7 @@ def resolve(
     if repo in ("..", ".") or not REPO_RE.match(repo):
         raise ResolveError(f"invalid repository in config: '{repo}'")
 
-    # --- ref ---
+    # ref
     ref = parts["ref"] or "HEAD"
     if ref != "HEAD":
         if (
@@ -227,7 +221,7 @@ def resolve(
         ):
             raise ResolveError(f"invalid git ref in config: '{ref}'")
 
-    # --- subpath -> filename + directory + search candidates ---
+    # subpath -> filename + directory + search candidates
     default_dir_specific = f".github/{family}/{workflow_org}"
     default_dir_family = f".github/{family}"
 
@@ -259,7 +253,6 @@ def resolve(
         path_explicit = True
         candidates = [subpath]
 
-    # Validate every candidate path segment.
     for cand in candidates:
         if cand.startswith("/") or "\\" in cand or ".." in cand.split("/"):
             raise ResolveError(f"invalid in-repo path in config: '{cand}'")
@@ -287,9 +280,7 @@ def resolve(
     }
 
 
-# ---------------------------------------------------------------------
 # Fetch (shallow, ref-pinned, git over HTTPS)
-# ---------------------------------------------------------------------
 
 
 def _run_git(args: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -454,13 +445,11 @@ def fetch_file(
             if typ.returncode != 0 or typ.stdout.strip() != "blob":
                 continue
             size = git(["cat-file", "-s", f"{resolved_sha}:{cand}"])
-            try:
-                if size.returncode == 0 and int(size.stdout.strip()) > MAX_FILE_BYTES:
-                    raise ResolveError(
-                        f"config file '{cand}' exceeds {MAX_FILE_BYTES}-byte limit"
-                    )
-            except ValueError:
-                pass
+            size_text = size.stdout.strip() if size.returncode == 0 else ""
+            if size_text.isdecimal() and int(size_text) > MAX_FILE_BYTES:
+                raise ResolveError(
+                    f"config file '{cand}' exceeds {MAX_FILE_BYTES}-byte limit"
+                )
             shown = git(["show", f"{resolved_sha}:{cand}"])
             if shown.returncode != 0:
                 continue
@@ -501,17 +490,12 @@ def fetch_file(
                     typ = git(["cat-file", "-t", f"{resolved_sha}:{cand}"])
                     if typ.returncode == 0 and typ.stdout.strip() == "blob":
                         size = git(["cat-file", "-s", f"{resolved_sha}:{cand}"])
-                        try:
-                            if (
-                                size.returncode == 0
-                                and int(size.stdout.strip()) > MAX_FILE_BYTES
-                            ):
-                                raise ResolveError(
-                                    f"config file '{cand}' exceeds "
-                                    f"{MAX_FILE_BYTES}-byte limit"
-                                )
-                        except ValueError:
-                            pass
+                        size_text = size.stdout.strip() if size.returncode == 0 else ""
+                        if size_text.isdecimal() and int(size_text) > MAX_FILE_BYTES:
+                            raise ResolveError(
+                                f"config file '{cand}' exceeds "
+                                f"{MAX_FILE_BYTES}-byte limit"
+                            )
                         shown = git(["show", f"{resolved_sha}:{cand}"])
                         if shown.returncode == 0:
                             return {
@@ -540,9 +524,7 @@ def fetch_file(
         }
 
 
-# ---------------------------------------------------------------------
 # Sanitisation (mode-selected)
-# ---------------------------------------------------------------------
 
 
 def _strip_comments_and_split(raw: str) -> list[str]:
@@ -606,9 +588,7 @@ def sanitise(raw: str, mode: str) -> list[str]:
     return tokens
 
 
-# ---------------------------------------------------------------------
 # Emit helpers
-# ---------------------------------------------------------------------
 
 
 def _append(path: str, text: str) -> None:
@@ -665,9 +645,7 @@ def write_step_summary(path: str, title: str, unit: str, result: dict) -> None:
     _append(path, "\n".join(lines))
 
 
-# ---------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

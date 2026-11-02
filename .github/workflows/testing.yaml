@@ -191,7 +191,7 @@ jobs:
           echo "Happy-path default-URL assertions passed ($count endpoints) ✅"
 
   ### Config mode (Node→Python integration). Asserts that pre.mjs
-  ### invokes the shared resolver, fetches the live allow-list via
+  ### invokes the resolver, fetches the live allow-list via
   ### git, publishes the env var, and emits the resolved_* outputs
   ### (notably the peeled commit resolved_sha).
   test-config-mode:
@@ -416,7 +416,7 @@ jobs:
   ### Unit tests for the supplemental helpers.
   ###
   ### These live here rather than in resolver-tests.yaml, which is
-  ### path-filtered to the mirrored Python resolver and its suites. A
+  ### path-filtered to the Python resolver and its suites. A
   ### step added there would not run for a pull request touching only
   ### src/supplemental.mjs or this file's tests -- that is, for exactly
   ### the changes these tests exist to catch. testing.yaml carries no
@@ -436,7 +436,7 @@ jobs:
           persist-credentials: false
 
       # Named explicitly rather than pointing node at tests/, which
-      # would try to execute the mirrored Python suite alongside it.
+      # would try to execute the resolver's Python suite alongside it.
       - name: "Run supplemental allow-list unit tests"
         shell: bash
         run: |
