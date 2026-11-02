@@ -20,13 +20,10 @@
 # those two is worthwhile but is a code change, not a configuration one:
 #
 #   - "B" adds one B904 (raise-without-from) site in
-#     src/resolve_config_source.py, which needs a judgement about which
+#     src/resolve_config_fetch.py, which needs a judgement about which
 #     exception context to preserve.
 #   - "I" flags the import block in the test modules, which deliberately
 #     call sys.path.insert() before importing the module under test.
-#     One of those files is mirrored byte-for-byte with a sibling
-#     repository and is marked "DO NOT EDIT IN ISOLATION", so touching
-#     it requires paired pull requests in both repositories.
 #
 # Both belong in their own reviewed change rather than riding along with
 # a version bump.

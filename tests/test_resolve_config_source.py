@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║  SYNCHRONISED FILE — DO NOT EDIT IN ISOLATION                      ║
-# ║                                                                    ║
-# ║  Mirrored across:                                                  ║
-# ║    - lfreleng-actions/python-audit-action       : tests/...        ║
-# ║    - lfreleng-actions/harden-runner-block-action: tests/...        ║
-# ║                                                                    ║
-# ║  These tests pin the shared `config` grammar. Changes must land    ║
-# ║  as paired PRs in both repositories together with the module.      ║
-# ╚══════════════════════════════════════════════════════════════════╝
+# These tests pin the `config` grammar of the resolver this repository
+# owns. The resolve-config sub-action exposes that grammar to
+# python-audit-action, which pins it, so a change that alters what
+# these tests accept is a breaking change for that consumer.
 #
 # Unit tests for resolve_config_source: parsing, resolution defaults,
 # the search-candidate chain, the mode-selected sanitisers, and
@@ -25,6 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import resolve_config_fetch as rcs_fetch  # noqa: E402
 import resolve_config_source as rcs  # noqa: E402
 
 
@@ -250,7 +245,7 @@ def _install_fake_git(
     sizes=None,
     trees=None,
 ):
-    """Stub rcs._run_git so fetch_file() runs without touching git/network.
+    """Stub rcs_fetch._run_git so fetch_file() runs without touching git/network.
 
     files maps an in-repo path to its content; sizes optionally overrides
     the reported blob size; trees is a set of paths reported as 'tree'
@@ -302,7 +297,7 @@ def _install_fake_git(
             return cp(0, "".join(f"{p}\n" for p in listed))
         return cp(0)
 
-    monkeypatch.setattr(rcs, "_run_git", fake_run_git)
+    monkeypatch.setattr(rcs_fetch, "_run_git", fake_run_git)
     return calls
 
 
@@ -469,7 +464,7 @@ def _install_slow_fetch(monkeypatch, fetch_seconds):
     """
     now = [100.0]
     fetch_timeouts: list[float] = []
-    stub = rcs._run_git
+    stub = rcs_fetch._run_git
 
     def slow_run_git(args, timeout):
         if "fetch" in args:
@@ -478,7 +473,7 @@ def _install_slow_fetch(monkeypatch, fetch_seconds):
             now[0] += fetch_seconds
         return stub(args, timeout)
 
-    monkeypatch.setattr(rcs, "_run_git", slow_run_git)
+    monkeypatch.setattr(rcs_fetch, "_run_git", slow_run_git)
     return now, fetch_timeouts
 
 

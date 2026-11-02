@@ -5,9 +5,10 @@
 # Runs the config-resolver unit tests (pytest).
 #
 # The action's main code path is exercised via node (see
-# testing.yaml), but the shared src/resolve_config_source.py module
-# carries its own pytest suite that pins the `config` grammar and the
-# mode-selected sanitisers. A companion suite
+# testing.yaml), but the resolver (src/resolve_config_source.py and
+# its src/resolve_config_*.py modules) carries its own pytest suite
+# that pins the `config` grammar and the mode-selected sanitisers. A
+# companion suite
 # (test_allow_list_format_equivalence.py) pins the invariant that the
 # ingress file's layout -- one line or many, with or without comments
 # -- never changes the sanitised output. Without this job those tests
@@ -21,7 +22,7 @@ on:
   push:
     branches: ['main']
     paths:
-      - 'src/resolve_config_source.py'
+      - 'src/resolve_config_*.py'
       - 'tests/test_resolve_config_source.py'
       - 'tests/test_allow_list_format_equivalence.py'
       - 'tests/test_resolve_config_action.py'
@@ -30,7 +31,7 @@ on:
   pull_request:
     branches: ['main']
     paths:
-      - 'src/resolve_config_source.py'
+      - 'src/resolve_config_*.py'
       - 'tests/test_resolve_config_source.py'
       - 'tests/test_allow_list_format_equivalence.py'
       - 'tests/test_resolve_config_action.py'

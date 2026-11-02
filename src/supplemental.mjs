@@ -5,10 +5,11 @@
 //
 // Kept out of config-flow.mjs so they can be unit-tested without
 // executing the action or spawning the resolver, and deliberately NOT
-// placed in resolve_config_source.py: that module is mirrored
-// byte-for-byte into python-audit-action and any change there needs
-// paired pull requests. Merging two resolved lists is this action's
-// concern alone, so it does not belong in the shared resolver.
+// placed in resolve_config_source.py: that module also serves
+// python-audit-action through the resolve-config sub-action ('--mode
+// vulns'), which must not inherit this behaviour. Merging two resolved
+// lists is this action's concern alone, so it does not belong in the
+// resolver.
 
 // A trailing ' #...' comment, exactly as resolve_config_source.py's
 // split_comment() defines it: one or more spaces/tabs, '#', to end of

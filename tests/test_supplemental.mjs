@@ -3,13 +3,13 @@
 //
 // Unit tests for the supplemental allow-list helpers.
 //
-// NOT a synchronised file: this logic belongs to harden-runner-block-action
-// alone and is deliberately absent from the mirrored resolver.
+// This logic belongs to this action alone and is deliberately absent
+// from the resolver, which also serves python-audit-action.
 //
 // Run with: node --test tests/test_supplemental.mjs
 //
 // Named explicitly, not 'node --test tests/': this directory also
-// holds the mirrored Python suite, which node would try to execute.
+// holds the resolver's Python suite, which node would try to execute.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

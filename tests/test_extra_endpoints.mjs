@@ -6,7 +6,7 @@
 // Run with: node --test tests/test_extra_endpoints.mjs
 //
 // Named explicitly, not 'node --test tests/': this directory also
-// holds the mirrored Python suite, which node would try to execute.
+// holds the resolver's Python suite, which node would try to execute.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

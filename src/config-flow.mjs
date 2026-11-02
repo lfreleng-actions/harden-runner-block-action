@@ -5,16 +5,16 @@
 //
 // The 'config' input names an allow-list by repository spec rather than
 // by path or URL. Resolving that spec is the job of the shared Python
-// resolver (src/resolve_config_source.py), which is mirrored
-// byte-for-byte across the actions that consume it; this module drives
-// it and publishes the result.
+// resolver (src/resolve_config_source.py), which this repository owns
+// and also publishes to python-audit-action through the resolve-config
+// sub-action; this module drives it and publishes the result.
 //
 // 'supplemental_config' names a second list, resolved by the same
 // resolver and concatenated with the first. Merging two already-resolved
 // lists is this action's concern alone, so it happens here rather than
-// in the mirrored resolver, which would otherwise need paired pull
-// requests and would impose the new behaviour on its '--mode vulns'
-// consumer. The resolver is simply invoked twice.
+// in the resolver, which would otherwise impose the new behaviour on
+// python-audit-action, its '--mode vulns' consumer. The resolver is
+// simply invoked twice.
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -249,7 +249,7 @@ export function runConfigFlow(inputs) {
 
   maskSecret(token);
 
-  // Preflight: the shared resolver needs python3 on the runner.
+  // Preflight: the resolver needs python3 on the runner.
   const probe = spawnSync('python3', ['--version'], { encoding: 'utf8' });
   if (probe.status !== 0) {
     fail("python3 is required for the 'config' input but was not found ❌");
