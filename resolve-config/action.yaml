@@ -1,0 +1,165 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# resolve-config: runs this repository's shared `config` resolver
+# (src/resolve_config_source.py) as a composite sub-action.
+#
+# Consumer: lfreleng-actions/python-audit-action, which calls it by
+# commit SHA. Its inputs and outputs are a public interface; changing
+# them is a breaking change for release purposes. See the README
+# section "The resolve-config sub-action".
+#
+# The sub-action installs nothing, calls no other action and never
+# writes GITHUB_ENV. A miss at an auto-derived path exits 0 with
+# found=false; the caller decides whether that is fatal.
+
+name: "🔎 Resolve config source"
+description: >-
+  Resolve a uses:-style `config` coordinate to a pinned commit, fetch
+  the file it names and publish its sanitised entries as outputs.
+
+inputs:
+  config:
+    description: "The `config` coordinate, passed to --config"
+    required: true
+  family:
+    description: >-
+      Directory under .github/ in the host repository, passed to
+      --family (e.g. python-audit, harden-runner)
+    required: true
+  mode:
+    description: "Token grammar: endpoints or vulns, passed to --mode"
+    required: true
+  token:
+    description: >-
+      Token for a private host repository; reaches the resolver only
+      through --token-env
+    required: false
+    default: ""
+  workflow_org:
+    description: "Workflow org, passed to --workflow-org"
+    required: false
+    default: ${{ github.repository_owner }}
+  default_filename:
+    description: "File name searched for, passed to --default-filename"
+    required: false
+    default: "allow_list.txt"
+  timeout:
+    description: "Seconds, passed to --timeout"
+    required: false
+    default: "30"
+  summary:
+    description: "Set false to suppress the step-summary block"
+    required: false
+    default: "true"
+  summary_title:
+    description: >-
+      Step-summary heading, passed to --summary-title; empty also
+      suppresses the block
+    required: false
+    default: ""
+  summary_unit:
+    description: "Count label in the step summary, passed to --summary-unit"
+    required: false
+    default: "Entries"
+
+outputs:
+  entries:
+    description: "Sanitised entries, space-separated"
+    value: ${{ steps.resolve.outputs.entries }}
+  count:
+    description: "Number of entries"
+    value: ${{ steps.resolve.outputs.count }}
+  found:
+    description: "true when a file matched, false on a soft miss"
+    value: ${{ steps.resolve.outputs.found }}
+  path_explicit:
+    description: "true when `config` named an explicit in-repo path"
+    value: ${{ steps.resolve.outputs.path_explicit }}
+  resolved_host_org:
+    description: "Host org that supplied the file"
+    value: ${{ steps.resolve.outputs.resolved_host_org }}
+  resolved_repo:
+    description: "Repository that supplied the file"
+    value: ${{ steps.resolve.outputs.resolved_repo }}
+  resolved_ref:
+    description: "Git ref requested"
+    value: ${{ steps.resolve.outputs.resolved_ref }}
+  resolved_sha:
+    description: "Commit SHA the ref resolved to"
+    value: ${{ steps.resolve.outputs.resolved_sha }}
+  resolved_path:
+    description: "In-repo path of the matched file; empty on a miss"
+    value: ${{ steps.resolve.outputs.resolved_path }}
+  matched_candidate:
+    description: >-
+      org-specific, family-default, sole-org-fallback or explicit;
+      empty on a miss
+    value: ${{ steps.resolve.outputs.matched_candidate }}
+  source:
+    description: "Always config"
+    value: ${{ steps.resolve.outputs.source }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Resolve config source"
+      id: resolve
+      shell: bash
+      env:
+        RESOLVE_CONFIG: ${{ inputs.config }}
+        RESOLVE_FAMILY: ${{ inputs.family }}
+        RESOLVE_MODE: ${{ inputs.mode }}
+        RESOLVE_TOKEN: ${{ inputs.token }}
+        RESOLVE_WORKFLOW_ORG: ${{ inputs.workflow_org }}
+        RESOLVE_DEFAULT_FILENAME: ${{ inputs.default_filename }}
+        RESOLVE_TIMEOUT: ${{ inputs.timeout }}
+        RESOLVE_SUMMARY: ${{ inputs.summary }}
+        RESOLVE_SUMMARY_TITLE: ${{ inputs.summary_title }}
+        RESOLVE_SUMMARY_UNIT: ${{ inputs.summary_unit }}
+      run: |
+        # Resolve config source
+        if [ -n "${RESOLVE_TOKEN}" ]; then
+          echo "::add-mask::${RESOLVE_TOKEN}"
+        fi
+        set -euo pipefail
+
+        if ! command -v python3 > /dev/null 2>&1; then
+          echo "::error::resolve-config needs python3 on PATH ❌"
+          exit 1
+        fi
+        # The value is not echoed: it could carry a workflow command.
+        case "${RESOLVE_MODE}" in
+          endpoints | vulns) ;;
+          *)
+            echo "::error::resolve-config mode must be endpoints or vulns ❌"
+            exit 1
+            ;;
+        esac
+
+        step_summary="${GITHUB_STEP_SUMMARY:-}"
+        if [ "${RESOLVE_SUMMARY}" = "false" ]; then
+          step_summary=""
+        fi
+
+        # -I -S keep PYTHON* variables and site-packages out of the
+        # interpreter that holds the token.
+        status=0
+        python3 -I -S "${GITHUB_ACTION_PATH}/../src/resolve_config_source.py" \
+          --config "${RESOLVE_CONFIG}" \
+          --family "${RESOLVE_FAMILY}" \
+          --mode "${RESOLVE_MODE}" \
+          --token-env RESOLVE_TOKEN \
+          --workflow-org "${RESOLVE_WORKFLOW_ORG}" \
+          --default-filename "${RESOLVE_DEFAULT_FILENAME}" \
+          --timeout "${RESOLVE_TIMEOUT}" \
+          --content-key entries \
+          --github-output "${GITHUB_OUTPUT}" \
+          --step-summary "${step_summary}" \
+          --summary-title "${RESOLVE_SUMMARY_TITLE}" \
+          --summary-unit "${RESOLVE_SUMMARY_UNIT}" || status=$?
+        if [ "${status}" -ne 0 ]; then
+          echo "::error::resolve-config failed; see the resolver error above ❌"
+          exit "${status}"
+        fi

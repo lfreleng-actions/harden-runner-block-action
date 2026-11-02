@@ -17,8 +17,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import resolve_config_source as rcs  # noqa: E402
@@ -96,14 +94,12 @@ def written_keys(tmp_path: Path) -> set[str]:
     }
 
 
-@pytest.mark.xfail(strict=True, reason="resolve-config sub-action not yet added")
 def test_outputs_match_resolver_keys(tmp_path: Path) -> None:
     keys = written_keys(tmp_path)
     assert CONTENT_KEY in keys
     assert declared_outputs(_action_text()) == keys
 
 
-@pytest.mark.xfail(strict=True, reason="resolve-config sub-action not yet added")
 def test_run_script_has_no_expressions() -> None:
     script = run_script(_action_text())
     assert "${{" not in script
@@ -192,7 +188,6 @@ def test_pth_hook_fires_under_plain_python(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8") == SECRET
 
 
-@pytest.mark.xfail(strict=True, reason="resolve-config sub-action not yet added")
 def test_config_step_does_not_load_site_packages(tmp_path: Path) -> None:
     venv_bin, marker = _hostile_venv(tmp_path)
     stub_dir = _failing_git(tmp_path)
