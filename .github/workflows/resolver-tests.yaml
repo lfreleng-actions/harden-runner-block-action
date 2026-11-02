@@ -24,6 +24,7 @@ on:
       - 'src/resolve_config_source.py'
       - 'tests/test_resolve_config_source.py'
       - 'tests/test_allow_list_format_equivalence.py'
+      - 'tests/test_resolve_config_action.py'
       - '.github/workflows/resolver-tests.yaml'
   pull_request:
     branches: ['main']
@@ -31,6 +32,7 @@ on:
       - 'src/resolve_config_source.py'
       - 'tests/test_resolve_config_source.py'
       - 'tests/test_allow_list_format_equivalence.py'
+      - 'tests/test_resolve_config_action.py'
       - '.github/workflows/resolver-tests.yaml'
 
 concurrency:
