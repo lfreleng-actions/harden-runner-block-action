@@ -851,6 +851,106 @@ files.pythonhosted.org:443
 
 <!-- markdownlint-enable MD046 -->
 
+## The resolve-config sub-action
+
+`resolve-config/action.yaml` is a composite sub-action that runs the
+`config` resolver (`src/resolve_config_source.py`) and nothing else.
+It lets another action resolve, fetch and sanitise a `config`
+coordinate without carrying its own copy of the resolver.
+[python-audit-action](https://github.com/lfreleng-actions/python-audit-action)
+calls it to load its vulnerability allow-list. This repository's main
+action is a `node24` action with a `pre:` hook and cannot itself call
+another action, so it runs the same resolver directly.
+
+> [!IMPORTANT]
+> The sub-action's inputs and outputs form a public interface that
+> python-audit-action depends on. Renaming or removing an input or
+> output, or changing what one means, is a breaking change for
+> release purposes.
+
+Pin it by commit SHA, like any other action, and let Dependabot bump
+the pin:
+
+<!-- markdownlint-disable MD013 -->
+
+```yaml
+steps:
+  - name: "Resolve allow-list via config"
+    id: config_resolve
+    uses: lfreleng-actions/harden-runner-block-action/resolve-config@<commit-sha>  # <release-tag>
+    with:
+      config: 'lfreleng-actions@v0.19.0'
+      family: 'python-audit'
+      mode: 'vulns'
+      summary_title: 'Vulnerability allow-list'
+
+  - name: "Use the entries"
+    if: steps.config_resolve.outputs.found == 'true'
+    shell: bash
+    env:
+      IDS: ${{ steps.config_resolve.outputs.entries }}
+    run: echo "Loaded ${IDS}"
+```
+
+<!-- markdownlint-enable MD013 -->
+
+The step needs `python3` and `git` on `PATH`, as GitHub-hosted runners
+provide. It installs nothing, calls no other action and never writes
+`GITHUB_ENV`.
+
+### resolve-config inputs
+
+<!-- markdownlint-disable MD013 -->
+
+| Name               | Required | Default                   | Description                                                                                                  |
+| ------------------ | -------- | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `config`           | Yes      |                           | The `config` coordinate; see [`config` grammar](#config-grammar).                                            |
+| `family`           | Yes      |                           | Directory under `.github/` in the host repository, for example `python-audit` or `harden-runner`.            |
+| `mode`             | Yes      |                           | Token grammar: `endpoints` (`host[:port]`) or `vulns` (CVE, GHSA, PYSEC, OSV and PVE IDs).                   |
+| `token`            | No       | _empty_                   | Token for a private host repository. Masked, and passed to the resolver through the environment, never argv. |
+| `workflow_org`     | No       | `github.repository_owner` | Org that selects the org-specific search candidate.                                                          |
+| `default_filename` | No       | `allow_list.txt`          | File name the search chain looks for when `config` names no file.                                            |
+| `timeout`          | No       | `30`                      | Seconds the git fetch may take, retries included.                                                            |
+| `summary`          | No       | `true`                    | Set `false` to suppress the step-summary block, for example on matrix legs.                                  |
+| `summary_title`    | No       | _empty_                   | Heading of the step-summary block. Empty also suppresses the block.                                          |
+| `summary_unit`     | No       | `Entries`                 | Label for the entry count in the step-summary block.                                                         |
+
+<!-- markdownlint-enable MD013 -->
+
+### resolve-config outputs
+
+<!-- markdownlint-disable MD013 -->
+
+| Name                | Description                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| `entries`           | The sanitised entries, space-separated. Empty on a soft miss.                                  |
+| `count`             | Number of entries.                                                                             |
+| `found`             | `true` when a file matched, `false` on a soft miss.                                            |
+| `path_explicit`     | `true` when `config` named an explicit in-repo directory and file.                             |
+| `resolved_host_org` | Host org that supplied the file.                                                               |
+| `resolved_repo`     | Repository that supplied the file.                                                             |
+| `resolved_ref`      | Git ref requested.                                                                             |
+| `resolved_sha`      | Commit SHA the ref resolved to.                                                                |
+| `resolved_path`     | In-repo path of the matched file. Empty on a soft miss.                                        |
+| `matched_candidate` | `org-specific`, `family-default`, `sole-org-fallback` or `explicit`. Empty on a soft miss.     |
+| `source`            | Always `config`.                                                                               |
+
+<!-- markdownlint-enable MD013 -->
+
+### Soft misses
+
+A missing file at an auto-derived path, one the
+[search chain](#search--fallback-chain) chose, is a **soft miss**: the
+step succeeds with `found=false`, `count=0` and empty `entries`. The
+caller decides whether that is fatal. python-audit-action treats it as
+a soft no-op; this repository's main action treats the same miss as
+an error.
+
+Everything else fails the step with an `::error::` annotation: a
+missing file at an explicit path, a `mode` other than `endpoints` or
+`vulns`, a malformed coordinate, a failed fetch, or a token the
+`mode` grammar rejects.
+
 ## Implementation details
 
 The action is a Node.js (`node24`) action with a `pre:` hook and a
