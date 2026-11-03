@@ -327,6 +327,13 @@ outputs:
       Milliseconds the main step spent waiting for the agent. Shows how
       far past harden-runner's nine-second wait the agent needed, and
       so how much margin 'agent_timeout' leaves.
+  agent_unresolved_endpoint:
+    description: >
+      The hostname harden-runner's agent failed to resolve before it
+      reverted, taken from its log. Empty unless 'agent_status' is
+      'reverted' and the log names one. A name absent from the
+      allow-list is one harden-runner adds itself, and a re-run is the
+      remedy.
 
 runs:
   using: "node24"

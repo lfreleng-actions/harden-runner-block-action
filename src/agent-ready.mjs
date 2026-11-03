@@ -10,8 +10,11 @@
 // 'timed out' and returns success, and the job's main steps begin.
 //
 // In block mode the agent resolves every non-wildcard allowed endpoint,
-// then switches the runner's DNS and installs its firewall rules, and
-// writes that file after all of it is done. With a shared organisation
+// together with the endpoints it adds itself (among them some 190
+// GitHub Actions hostnames it fetches from the GitHub meta API), then
+// switches the runner's DNS and installs its firewall rules, and
+// writes that file after all of it is done. One failed lookup of any
+// of those names makes it revert. With a shared organisation
 // allow-list of a hundred and fifty hostnames the resolving alone takes
 // nine to ten seconds, so harden-runner's wait expires on EVERY run,
 // and the first main step to open a connection races the agent: a
@@ -40,7 +43,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { annotate, fail, info, setOutput } from './actions-io.mjs';
+import { annotate, fail, info, parseKeyValueFile, setOutput } from './actions-io.mjs';
+import { hostOf } from './dns-validate.mjs';
 
 export const AGENT_DIR = '/home/agent';
 export const AGENT_MODES = Object.freeze(['error', 'warning']);
@@ -124,12 +128,27 @@ function tail(text) {
   return lines.slice(-LOG_TAIL_LINES).join('\n');
 }
 
+// The agent logs a failed pre-resolution as
+//   unable to resolve domain: <name>. err: ...
+// with the name fully qualified. Returns the last such name, without
+// the trailing dot and lower-cased, or '' when the log names none.
+const UNRESOLVED_RE = /unable to resolve domain: ([A-Za-z0-9_.-]+)/g;
+
+export function unresolvedEndpoint(log) {
+  let name = '';
+  for (const m of log.matchAll(UNRESOLVED_RE)) name = m[1];
+  return name.replace(/\.$/, '').toLowerCase();
+}
+
 // Poll for the agent's verdict. Resolves to one of:
 //
 //   { status: 'skipped',  reason }  nothing to wait for
 //   { status: 'ready' }             enforcement is in place
 //   { status: 'failed',   detail }  the agent reported an error
-//   { status: 'reverted', detail }  the agent undid its changes
+//   { status: 'reverted', detail, endpoint }
+//                                   the agent undid its changes;
+//                                   endpoint is the name it could not
+//                                   resolve, or '' when the log has none
 //   { status: 'timeout',  detail }  no verdict before the deadline
 //
 // each with waitedMs. `marks` is what markAgentFiles() returned in pre;
@@ -185,7 +204,7 @@ export async function waitForAgent({
     const waitedMs = now() - started;
     const log = readSince(logFile, marks?.log) ?? '';
     if (log.includes(REVERTED_MARKER)) {
-      return { status: 'reverted', detail: tail(log), waitedMs };
+      return { status: 'reverted', detail: tail(log), endpoint: unresolvedEndpoint(log), waitedMs };
     }
     const status = (readSince(statusFile, marks?.status) ?? '').trim();
     if (status !== '') {
@@ -201,14 +220,66 @@ export async function waitForAgent({
 
 const NOT_READY_TITLE = 'harden-runner agent did not start';
 
-function describe(result, timeoutMs) {
+const LIST_OUTPUT = 'allowed_endpoints';
+const FLAGGED_OUTPUTS = ['invalid_records', 'indeterminate_records'];
+
+function hostsOf(value) {
+  return new Set((value || '').split(/\s+/).filter(Boolean).map(hostOf).filter(Boolean));
+}
+
+// Who owns the endpoint the agent could not resolve. Pre published the
+// final allow-list in the env var named by env_var_name and as the
+// 'allowed_endpoints' output, which main has republished; the outputs
+// file also carries the names pre's own DNS check failed on. The agent
+// never pre-resolves a wildcard, so an exact host match suffices.
+//
+//   'listed'    an allow-list entry that pre's check resolved
+//   'flagged'   an allow-list entry that pre's check also failed on
+//   'implicit'  not in the allow-list: one harden-runner adds itself
+//   'unknown'   the published allow-list is not available here
+export function classifyEndpoint(endpoint, envVarName) {
+  let outputs = {};
+  try {
+    outputs = parseKeyValueFile(fs.readFileSync(process.env.GITHUB_OUTPUT, 'utf8'));
+  } catch {
+    // no outputs file: classify from the env var alone
+  }
+  const published = (envVarName && process.env[envVarName]) ?? outputs[LIST_OUTPUT];
+  if (published === undefined) return 'unknown';
+  if (!hostsOf(published).has(endpoint)) return 'implicit';
+  const flagged = FLAGGED_OUTPUTS.some((name) => hostsOf(outputs[name]).has(endpoint));
+  return flagged ? 'flagged' : 'listed';
+}
+
+const REVERT_DIAGNOSES = {
+  listed: (host) =>
+    `It could not resolve ${host}, an allow-list entry that resolved in this ` +
+    "action's pre-check: a transient resolver failure rather than a stale " +
+    'entry; re-run the job',
+  flagged: (host) =>
+    `It could not resolve ${host}, an allow-list entry that this action's ` +
+    'pre-check could not resolve either (see invalid_records and ' +
+    'indeterminate_records); check or remove the entry',
+  implicit: (host) =>
+    `It could not resolve ${host}, which is not in the allow-list: ` +
+    'harden-runner adds it itself (the GitHub Actions domains it fetches ' +
+    'from the GitHub meta API), so no allow-list entry caused the revert ' +
+    'and editing the list will not help; a transient resolver failure, ' +
+    're-run the job',
+  unknown: (host) => `It could not resolve ${host}`,
+};
+
+function describe(result, timeoutMs, ownership) {
   const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
   switch (result.status) {
     case 'failed':
       return `harden-runner's agent reported an error after ${seconds(result.waitedMs)}: ${result.detail}`;
-    case 'reverted':
-      return `harden-runner's agent reverted its changes after ${seconds(result.waitedMs)} ` +
+    case 'reverted': {
+      const base = `harden-runner's agent reverted its changes after ${seconds(result.waitedMs)} ` +
         '(see the agent log below); the job has no egress filtering';
+      if (!result.endpoint) return base;
+      return `${base}. ${REVERT_DIAGNOSES[ownership](result.endpoint)}`;
+    }
     default:
       return `harden-runner's agent did not report ready within ${seconds(timeoutMs)}; ` +
         'the job may have no egress filtering';
@@ -222,14 +293,17 @@ export async function enforceAgentReadyPolicy(inputs, waiter = waitForAgent) {
   if (timeoutMs === 0) {
     setOutput('agent_status', 'disabled');
     setOutput('agent_wait_ms', '0');
+    setOutput('agent_unresolved_endpoint', '');
     info('Not waiting for the harden-runner agent (agent_timeout: 0) ℹ️');
     return;
   }
 
   const marks = parseMarks(process.env[`STATE_${MARKS_STATE}`] || '');
   const result = await waiter({ timeoutMs, marks });
+  const endpoint = result.status === 'reverted' ? result.endpoint || '' : '';
   setOutput('agent_status', result.status);
   setOutput('agent_wait_ms', String(result.waitedMs));
+  setOutput('agent_unresolved_endpoint', endpoint);
 
   if (result.status === 'skipped') {
     info(`Not waiting for the harden-runner agent: ${result.reason} ℹ️`);
@@ -240,7 +314,8 @@ export async function enforceAgentReadyPolicy(inputs, waiter = waitForAgent) {
     return;
   }
 
-  const message = describe(result, timeoutMs);
+  const ownership = endpoint ? classifyEndpoint(endpoint, inputs.envVarName) : null;
+  const message = describe(result, timeoutMs, ownership);
   if (result.detail && result.status !== 'failed') {
     info('Agent log (tail):');
     info(result.detail);

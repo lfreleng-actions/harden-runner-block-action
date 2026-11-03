@@ -132,29 +132,30 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                    | Description                                                                                                                                                     |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowed_endpoints`     | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list or `extra_endpoints` contributed endpoints. |
-| `source`                | One of `path`, `url`, `default-url`, `config`.                                                                                                                  |
-| `resolved_url`          | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead).                    |
-| `resolved_host_org`     | Host org that supplied the allow-list (`config` mode).                                                                                                          |
-| `resolved_repo`         | Repository that supplied the allow-list (`config` mode).                                                                                                        |
-| `resolved_ref`          | Git ref requested for the `config` fetch.                                                                                                                       |
-| `resolved_sha`          | Exact commit SHA the `config` ref resolved to.                                                                                                                  |
-| `resolved_path`         | In-repo path of the matched `config` file.                                                                                                                      |
-| `matched_candidate`     | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                                             |
-| `supplemental_source`   | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                                           |
-| `supplemental_count`    | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                                     |
-| `supplemental_sha`      | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                                                  |
-| `extra_count`           | Distinct entries in `extra_endpoints`. Empty when unset.                                                                                                        |
-| `extra_added`           | Space-separated entries `extra_endpoints` added that no loaded list carried, before the DNS check. Empty when none or unset.                                    |
-| `invalid_records`       | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                                                 |
-| `invalid_count`         | Number of entries in `invalid_records`.                                                                                                                         |
-| `indeterminate_records` | Space-separated entries that reached no DNS verdict after retries.                                                                                              |
-| `indeterminate_count`   | Number of entries in `indeterminate_records`.                                                                                                                   |
-| `egress_policy`         | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.                              |
-| `agent_status`          | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.                        |
-| `agent_wait_ms`         | Milliseconds the main step waited for the agent.                                                                                                                |
+| Name                        | Description                                                                                                                                                     |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_endpoints`         | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list or `extra_endpoints` contributed endpoints. |
+| `source`                    | One of `path`, `url`, `default-url`, `config`.                                                                                                                  |
+| `resolved_url`              | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead).                    |
+| `resolved_host_org`         | Host org that supplied the allow-list (`config` mode).                                                                                                          |
+| `resolved_repo`             | Repository that supplied the allow-list (`config` mode).                                                                                                        |
+| `resolved_ref`              | Git ref requested for the `config` fetch.                                                                                                                       |
+| `resolved_sha`              | Exact commit SHA the `config` ref resolved to.                                                                                                                  |
+| `resolved_path`             | In-repo path of the matched `config` file.                                                                                                                      |
+| `matched_candidate`         | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                                             |
+| `supplemental_source`       | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                                           |
+| `supplemental_count`        | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                                     |
+| `supplemental_sha`          | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                                                  |
+| `extra_count`               | Distinct entries in `extra_endpoints`. Empty when unset.                                                                                                        |
+| `extra_added`               | Space-separated entries `extra_endpoints` added that no loaded list carried, before the DNS check. Empty when none or unset.                                    |
+| `invalid_records`           | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                                                 |
+| `invalid_count`             | Number of entries in `invalid_records`.                                                                                                                         |
+| `indeterminate_records`     | Space-separated entries that reached no DNS verdict after retries.                                                                                              |
+| `indeterminate_count`       | Number of entries in `indeterminate_records`.                                                                                                                   |
+| `egress_policy`             | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.                              |
+| `agent_status`              | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.                        |
+| `agent_wait_ms`             | Milliseconds the main step waited for the agent.                                                                                                                |
+| `agent_unresolved_endpoint` | Hostname the agent failed to resolve before it reverted. Empty unless `agent_status` is `reverted` and the agent log names one.                                 |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -515,6 +516,18 @@ resolve would still make the agent fail open; the check removes the
 risk that the allow-list itself carries, which is the part a caller
 controls.
 
+The GitHub Actions domains are the bulk of these: since
+[step-security/agent@b7eb3ed5](https://github.com/step-security/agent/commit/b7eb3ed5)
+(harden-runner v2.21.1 and later) the agent fetches `domains.actions`
+from the GitHub meta API and pre-resolves some 190 hostnames such as
+`productionresultssaNNN.blob.core.windows.net`, one attempt each, in
+block mode. The `invalid_records` check cannot cover them because
+they are not in the list. When one of them fails to resolve, as a
+SERVFAIL from `dns.google` that clears within minutes does, the agent
+reverts; the main step names the endpoint, reports that no
+allow-list entry caused the revert, and re-running the job is the fix (see
+[Waiting for the agent](#waiting-for-the-agent)).
+
 ### Checking a list without enforcing it
 
 The outputs report the findings whenever the step succeeds, so a
@@ -564,8 +577,9 @@ already has between the two. It waits there for the status file, up
 to `agent_timeout` seconds (default 120), polling four times a second.
 The wait stops before the deadline when the agent reports an error in
 the status file, or when its log shows `Reverted changes`, which is
-what the agent writes after an allowed endpoint failed to resolve and
-it undid its changes (see [DNS checks](#dns-checks-on-the-allow-list)).
+what the agent writes after an allowed endpoint, or one it adds
+itself, failed to resolve and it undid its changes (see
+[DNS checks](#dns-checks-on-the-allow-list)).
 
 Each of those outcomes leaves the job with no egress filtering while
 every step reports success, which is the state this action exists to
@@ -586,6 +600,28 @@ prevent, so `agent_not_ready` defaults to `error`:
 
 A failing step prints the tail of the agent log, which names the
 endpoint that did not resolve or shows how far the agent got.
+
+On a revert the step also reads the hostname out of the agent log
+(`unable to resolve domain: <name>.`), publishes it as
+`agent_unresolved_endpoint`, and names it in the failure message (or
+the warning annotation) with one of these diagnoses:
+
+<!-- markdownlint-disable MD013 -->
+
+| Endpoint                                                  | Diagnosis                                                                                       |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| In the published allow-list; the pre-check resolved it    | A transient resolver failure rather than a stale entry; re-run the job                          |
+| In the published allow-list; the pre-check flagged it too | Check or remove the entry (see `invalid_records` and `indeterminate_records`)                   |
+| Not in the published allow-list                           | One harden-runner adds itself (the GitHub Actions meta-API domains); no list edit helps, re-run |
+| No hostname in the agent log                              | The message points at the log tail, as before                                                   |
+
+<!-- markdownlint-enable MD013 -->
+
+The published allow-list is the environment variable named by
+`env_var_name`, or the `allowed_endpoints` output when that variable
+is unset. Wildcard entries never reach the agent's pre-resolution, so
+an exact hostname match decides. When the endpoint is implicit, do
+not edit the allow-list: re-run the job.
 `agent_wait_ms` reports how long the wait took, which is how far past
 harden-runner's nine seconds the agent needed and so how much margin
 `agent_timeout` leaves.
