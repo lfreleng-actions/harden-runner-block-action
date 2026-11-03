@@ -15,7 +15,12 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { enforceAgentReadyPolicy, markAgentFiles, waitForAgent } from '../src/agent-ready.mjs';
+import {
+  enforceAgentReadyPolicy,
+  markAgentFiles,
+  unresolvedEndpoint,
+  waitForAgent,
+} from '../src/agent-ready.mjs';
 
 // A clock that advances only when the waiter sleeps. `onTick` runs
 // after each sleep with the new time, so a test can make the agent
@@ -171,6 +176,42 @@ test('a revert in the log outranks an Initialized status', async () => {
   });
 });
 
+// step-security/agent run 41654001736 in lfreleng-actions/dependamerge:
+// an implicit GitHub Actions endpoint hit SERVFAIL at dns.google.
+const IMPLICIT_REVERT_LOG = [
+  'Tue, 03 Nov 2026 14:28:31 GMT:Error resolving allowed domain error in response from dns.google unable to resolve domain productionresultssa128.blob.core.windows.net., status 2',
+  'Tue, 03 Nov 2026 14:28:31 GMT:unable to resolve domain: productionresultssa128.blob.core.windows.net. err: unable to resolve domain productionresultssa128.blob.core.windows.net., status 2',
+  'Tue, 03 Nov 2026 14:28:31 GMT:Reverted changes',
+  '',
+].join('\n');
+const IMPLICIT_HOST = 'productionresultssa128.blob.core.windows.net';
+
+test('a revert carries the endpoint the agent could not resolve', async () => {
+  await withAgentDir(async (dir) => {
+    fs.writeFileSync(path.join(dir, 'agent.log'), IMPLICIT_REVERT_LOG);
+    const r = await wait(dir, fakeClock());
+    assert.equal(r.status, 'reverted');
+    assert.equal(r.endpoint, IMPLICIT_HOST);
+  });
+});
+
+test('a revert whose log names no endpoint carries an empty one', async () => {
+  await withAgentDir(async (dir) => {
+    fs.writeFileSync(path.join(dir, 'agent.log'), 'Error in Initialization\nReverted changes\n');
+    const r = await wait(dir, fakeClock());
+    assert.equal(r.status, 'reverted');
+    assert.equal(r.endpoint, '');
+  });
+});
+
+test('unresolvedEndpoint strips the trailing dot and takes the last name', () => {
+  assert.equal(unresolvedEndpoint(IMPLICIT_REVERT_LOG), IMPLICIT_HOST);
+  assert.equal(unresolvedEndpoint(
+    'unable to resolve domain: A.example.\nunable to resolve domain: B.Example. err: x\n',
+  ), 'b.example');
+  assert.equal(unresolvedEndpoint('Reverted changes\n'), '');
+});
+
 // --- persistent runners: the agent appends to files an earlier job left
 
 test('markAgentFiles records size and inode, or zero for absent files', async () => {
@@ -270,13 +311,18 @@ const MARKS = { status: { size: 0, ino: 0 }, log: { size: 2048, ino: 43 } };
 // Run the policy with runner files in a temp dir, a fake waiter, and
 // stdout captured. process.exit is stubbed so 'error' mode can be
 // observed rather than ending the test process.
-async function runPolicy(inputs, result) {
+// `env` sets further variables for the run, and `outputs` is what the
+// outputs file already holds, as it does once main has republished
+// pre's outputs.
+async function runPolicy(inputs, result, { env = {}, outputs = '' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hrba-policy-'));
-  const keys = ['GITHUB_OUTPUT', 'STATE_agent_files'];
+  const keys = ['GITHUB_OUTPUT', 'STATE_agent_files', 'CONNECTION_ALLOW_LIST', ...Object.keys(env)];
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   process.env.GITHUB_OUTPUT = path.join(dir, 'output');
-  fs.writeFileSync(process.env.GITHUB_OUTPUT, '');
+  fs.writeFileSync(process.env.GITHUB_OUTPUT, outputs);
   process.env.STATE_agent_files = JSON.stringify(MARKS);
+  delete process.env.CONNECTION_ALLOW_LIST;
+  Object.assign(process.env, env);
 
   let stdout = '';
   let stderr = '';
@@ -377,4 +423,77 @@ test('warning mode annotates and continues', async () => {
   assert.match(r.stdout, /continuing because agent_not_ready is 'warning'/);
   assert.doesNotMatch(r.stdout, /::error/);
   assert.match(r.output, /^agent_status=timeout$/m);
+});
+
+// --- revert diagnoses ---------------------------------------------------
+
+const ERROR_INPUTS = { agentTimeout: 120, agentNotReady: 'error', envVarName: 'CONNECTION_ALLOW_LIST' };
+const IMPLICIT_RESULT = {
+  status: 'reverted', detail: IMPLICIT_REVERT_LOG.trim(), endpoint: IMPLICIT_HOST, waitedMs: 0,
+};
+
+test('a revert on an implicit endpoint names it and says to re-run', async () => {
+  const r = await runPolicy(ERROR_INPUTS, IMPLICIT_RESULT, {
+    env: { CONNECTION_ALLOW_LIST: 'github.com:443 *.blob.core.windows.net:443 pypi.org:443' },
+  });
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /::error::.*reverted its changes after 0\.0 s/);
+  assert.match(r.stdout, /productionresultssa128\.blob\.core\.windows\.net, which is not in the allow-list/);
+  assert.match(r.stdout, /harden-runner adds it itself/);
+  assert.match(r.stdout, /no allow-list entry caused the revert/);
+  assert.match(r.stdout, /re-run the job/);
+  assert.match(r.output, new RegExp(`^agent_unresolved_endpoint=${IMPLICIT_HOST.replace(/\./g, '\\.')}$`, 'm'));
+});
+
+test('a revert on a listed endpoint calls it a transient failure', async () => {
+  const r = await runPolicy(ERROR_INPUTS, IMPLICIT_RESULT, {
+    env: { CONNECTION_ALLOW_LIST: `github.com:443 ${IMPLICIT_HOST}:443` },
+  });
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /productionresultssa128\.blob\.core\.windows\.net, an allow-list entry that resolved/);
+  assert.match(r.stdout, /transient resolver failure rather than a stale entry/);
+  assert.doesNotMatch(r.stdout, /adds it itself/);
+});
+
+test('a revert on an entry the pre-check also failed on says so', async () => {
+  const r = await runPolicy(ERROR_INPUTS, IMPLICIT_RESULT, {
+    env: { CONNECTION_ALLOW_LIST: `github.com:443 ${IMPLICIT_HOST}:443` },
+    outputs: `invalid_records=${IMPLICIT_HOST}:443\n`,
+  });
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /pre-check could not resolve either/);
+  assert.doesNotMatch(r.stdout, /transient/);
+});
+
+test('without the env var the allowed_endpoints output is the list', async () => {
+  const r = await runPolicy(ERROR_INPUTS, IMPLICIT_RESULT, {
+    outputs: `allowed_endpoints=${IMPLICIT_HOST}:443\n`,
+  });
+  assert.match(r.stdout, /an allow-list entry that resolved/);
+});
+
+test('a revert naming no endpoint keeps the plain message', async () => {
+  const r = await runPolicy(ERROR_INPUTS, { status: 'reverted', detail: 'Reverted changes', endpoint: '', waitedMs: 800 }, {
+    env: { CONNECTION_ALLOW_LIST: 'github.com:443' },
+  });
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /::error::.*the job has no egress filtering ❌$/m);
+  assert.doesNotMatch(r.stdout, /could not resolve/);
+  assert.match(r.output, /^agent_unresolved_endpoint=$/m);
+});
+
+test('warning mode annotates with the same diagnosis and continues', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, agentNotReady: 'warning' }, IMPLICIT_RESULT, {
+    env: { CONNECTION_ALLOW_LIST: 'github.com:443' },
+  });
+  assert.equal(r.exitCode, null);
+  assert.match(r.stdout, /::warning title=harden-runner agent did not start::.*harden-runner adds it itself/);
+  assert.match(r.stdout, /continuing because agent_not_ready is 'warning'/);
+});
+
+test('outputs carry no endpoint unless the agent reverted', async () => {
+  const r = await runPolicy(ERROR_INPUTS, { status: 'ready', waitedMs: 5 });
+  assert.match(r.output, /^agent_unresolved_endpoint=$/m);
+  const d = await runPolicy({ ...ERROR_INPUTS, agentTimeout: 0 });
+  assert.match(d.output, /^agent_unresolved_endpoint=$/m);
 });
