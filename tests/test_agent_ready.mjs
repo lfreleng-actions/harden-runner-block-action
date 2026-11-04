@@ -442,7 +442,10 @@ test('a revert on an implicit endpoint names it and says to re-run', async () =>
   assert.match(r.stdout, /harden-runner adds it itself/);
   assert.match(r.stdout, /no allow-list entry caused the revert/);
   assert.match(r.stdout, /re-run the job/);
-  assert.match(r.output, new RegExp(`^agent_unresolved_endpoint=${IMPLICIT_HOST.replace(/\./g, '\\.')}$`, 'm'));
+  assert.ok(
+    r.output.split('\n').includes(`agent_unresolved_endpoint=${IMPLICIT_HOST}`),
+    r.output,
+  );
 });
 
 test('a revert on a listed endpoint calls it a transient failure', async () => {
