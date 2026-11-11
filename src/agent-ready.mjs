@@ -321,7 +321,7 @@ export async function enforceAgentReadyPolicy(inputs, waiter = waitForAgent) {
     info(result.detail);
   }
   if (inputs.agentNotReady === 'error') {
-    fail(`${message} ❌`);
+    fail(`${message} ❌`, NOT_READY_TITLE);
   }
   annotate('warning', NOT_READY_TITLE, message);
   info(`${message}; continuing because agent_not_ready is 'warning' ⚠️`);

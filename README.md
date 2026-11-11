@@ -601,6 +601,13 @@ prevent, so `agent_not_ready` defaults to `error`:
 A failing step prints the tail of the agent log, which names the
 endpoint that did not resolve or shows how far the agent got.
 
+The error annotation, like the warning one, carries the title
+`harden-runner agent did not start`, so a tool reading check-run
+annotations can class the failure as infrastructure rather than as a
+defect of the change under test. The messages open with stable words
+too: `harden-runner's agent reverted its changes`, `... did not report
+ready` and `... reported an error`.
+
 On a revert the step also reads the hostname out of the agent log
 (`unable to resolve domain: <name>.`), publishes it as
 `agent_unresolved_endpoint`, and names it in the failure message (or

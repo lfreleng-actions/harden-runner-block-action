@@ -388,7 +388,7 @@ test('error mode fails the step on a timeout', async () => {
     { status: 'timeout', detail: 'domain resolved: a.example.', waitedMs: 120_000 },
   );
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*did not report ready within 120\.0 s/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*did not report ready within 120\.0 s/);
   assert.match(r.stdout, /Agent log \(tail\):\ndomain resolved: a\.example\./);
   assert.match(r.output, /^agent_status=timeout$/m, 'outputs are published before failing');
 });
@@ -399,7 +399,7 @@ test('error mode fails the step on a revert, quoting the log', async () => {
     { status: 'reverted', detail: 'Reverted changes', waitedMs: 800 },
   );
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*reverted its changes after 0\.8 s/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*reverted its changes after 0\.8 s/);
   assert.match(r.stderr, /reverted its changes/);
 });
 
@@ -409,7 +409,7 @@ test('error mode fails the step on an agent error, quoting it', async () => {
     { status: 'failed', detail: 'Error reading config file', waitedMs: 300 },
   );
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*reported an error after 0\.3 s: Error reading config file/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*reported an error after 0\.3 s: Error reading config file/);
   assert.doesNotMatch(r.stdout, /Agent log \(tail\)/, 'the status text is the whole detail');
 });
 
@@ -437,7 +437,7 @@ test('a revert on an implicit endpoint names it and says to re-run', async () =>
     env: { CONNECTION_ALLOW_LIST: 'github.com:443 *.blob.core.windows.net:443 pypi.org:443' },
   });
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*reverted its changes after 0\.0 s/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*reverted its changes after 0\.0 s/);
   assert.match(r.stdout, /productionresultssa128\.blob\.core\.windows\.net, which is not in the allow-list/);
   assert.match(r.stdout, /harden-runner adds it itself/);
   assert.match(r.stdout, /no allow-list entry caused the revert/);
@@ -480,7 +480,7 @@ test('a revert naming no endpoint keeps the plain message', async () => {
     env: { CONNECTION_ALLOW_LIST: 'github.com:443' },
   });
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*the job has no egress filtering ❌$/m);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*the job has no egress filtering ❌$/m);
   assert.doesNotMatch(r.stdout, /could not resolve/);
   assert.match(r.output, /^agent_unresolved_endpoint=$/m);
 });
