@@ -30,8 +30,9 @@ description: >
 #     other main step. It waits there for harden-runner's agent to
 #     report that enforcement is in place, because harden-runner's pre
 #     hook stops waiting after nine seconds and a large allow-list
-#     takes the agent longer than that (inputs: agent_timeout,
-#     agent_not_ready).
+#     takes the agent longer than that, and restarts the agent after a
+#     transient revert (inputs: agent_timeout, agent_not_ready,
+#     agent_restart_attempts).
 
 inputs:
   allow_list_path:
@@ -209,9 +210,22 @@ inputs:
       Not consulted when harden-runner installed no agent (no
       harden-runner step, or the StepSecurity API declined to monitor
       the run), or reused an agent installed before the job began:
-      there is nothing to wait for and the step continues.
+      there is nothing to wait for and the step continues. Applied once
+      the 'agent_restart_attempts' restarts are spent.
     required: false
     default: "error"
+  agent_restart_attempts:
+    description: >
+      How many times the main step restarts harden-runner's agent
+      ('sudo -n systemctl restart agent.service') after it reverted its
+      changes on an endpoint this action reads as a transient resolver
+      failure: one the pre-check resolved, one harden-runner adds
+      itself, or one it cannot classify. An entry the pre-check could
+      not resolve either is not retried, nor is a timeout or an agent
+      error. Each restart waits again within the same 'agent_timeout'
+      budget, which restarts never extend. Set to 0 to disable.
+    required: false
+    default: "2"
 
 outputs:
   allowed_endpoints:
@@ -334,6 +348,11 @@ outputs:
       'reverted' and the log names one. A name absent from the
       allow-list is one harden-runner adds itself, and a re-run is the
       remedy.
+  agent_restarts:
+    description: >
+      How many times the main step restarted harden-runner's agent after
+      a transient revert (see 'agent_restart_attempts'). 'agent_status'
+      reports the outcome after the last of them.
 
 runs:
   using: "node24"

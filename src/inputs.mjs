@@ -46,12 +46,12 @@ function strictBool(name, value) {
   return value === 'true';
 }
 
-// A whole number of seconds, zero included. Anything else ('1m',
-// '-5', '') is refused rather than read as zero, which would turn a
-// typo into a disabled wait.
-function nonNegativeInt(name, value) {
+// A whole number, zero included. Anything else ('1m', '-5', '') is
+// refused rather than read as zero, which would turn a typo into a
+// disabled wait or no restarts.
+function nonNegativeInt(name, value, unit = 'seconds') {
   if (!/^\d+$/.test(value)) {
-    fail(`Input '${name}' must be a whole number of seconds (received '${value}') ❌`);
+    fail(`Input '${name}' must be a whole number of ${unit} (received '${value}') ❌`);
   }
   return Number(value);
 }
@@ -165,6 +165,11 @@ export function readInputs() {
     invalidRecords: getInput('invalid_records', 'filter').trim().toLowerCase(),
     agentTimeout: nonNegativeInt('agent_timeout', getInput('agent_timeout', '120').trim()),
     agentNotReady: getInput('agent_not_ready', 'error').trim().toLowerCase(),
+    agentRestartAttempts: nonNegativeInt(
+      'agent_restart_attempts',
+      getInput('agent_restart_attempts', '2').trim(),
+      'attempts',
+    ),
     workflowOrg: process.env.GITHUB_REPOSITORY_OWNER || '',
   };
   validate(inputs);
