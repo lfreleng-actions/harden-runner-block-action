@@ -67,9 +67,12 @@ export function info(msg) {
 // Emit a GitHub Actions error annotation AND echo to stderr so the raw
 // step log carries the same string even when annotations are
 // suppressed. Escape the annotation payload so user-controlled values
-// cannot inject additional workflow commands.
-export function err(msg) {
-  emit(`::error::${escapeWorkflowCommand(msg)}`);
+// cannot inject additional workflow commands. An optional title gives
+// the annotation a stable label that log and check-run readers can
+// match on.
+export function err(msg, title = '') {
+  const props = title ? ` title=${escapeProperty(title)}` : '';
+  emit(`::error${props}::${escapeWorkflowCommand(msg)}`);
   process.stderr.write(`${msg}\n`);
 }
 
@@ -80,8 +83,8 @@ export function annotate(level, title, msg) {
   emit(`::${level} title=${escapeProperty(title)}::${escapeWorkflowCommand(msg)}`);
 }
 
-export function fail(msg) {
-  err(msg);
+export function fail(msg, title = '') {
+  err(msg, title);
   process.exit(1);
 }
 

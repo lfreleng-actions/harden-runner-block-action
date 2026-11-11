@@ -34,6 +34,18 @@
 // egress filtering while every step reports success is the outcome
 // this action exists to prevent.
 //
+// The agent gives up on one failed lookup, and Google's DNS-over-HTTPS
+// answers SERVFAIL now and then for a name that resolves a minute
+// later. When the agent reverts on an endpoint this action reads as a
+// transient failure (one its pre-check resolved, one harden-runner
+// adds itself, or one it cannot classify), the step restarts the
+// agent's service and waits again, up to 'agent_restart_attempts'
+// times. The restarts share the 'agent_timeout' budget and never
+// extend it. Nothing else is retried: an entry the pre-check flagged
+// is stale, a timeout would spend the wait again, and a configuration
+// error repeats on every start. When the attempts run out the policy
+// applies as before, so the default stays fail-closed.
+//
 // The agent is Linux-only in the form watched here (the Windows agent
 // keeps its status file under a directory harden-runner saves in its
 // own state, which this action cannot read). Elsewhere, and whenever
@@ -44,6 +56,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { annotate, fail, info, parseKeyValueFile, setOutput } from './actions-io.mjs';
+import { restartAgent, restartInFlight } from './agent-restart.mjs';
 import { hostOf } from './dns-validate.mjs';
 
 export const AGENT_DIR = '/home/agent';
@@ -58,6 +71,7 @@ export const REVERTED_MARKER = 'Reverted changes';
 export const DEFAULTS = Object.freeze({
   timeoutMs: 120_000,
   pollMs: 250,
+  restartAttempts: 2,
 });
 
 const LOG_TAIL_LINES = 20;
@@ -172,9 +186,15 @@ export function unresolvedEndpoint(log) {
 // before main looked, a status-first check would call the job ready.
 // An empty status file is not a verdict either: the agent creates the
 // file and then writes to it, and a poll can land between the two.
+//
+// `restarted` says this action restarted the agent itself, after a
+// revert, and took the marks just before. A status file the earlier
+// start wrote (an 'Initialized' that a revert then undid) is not a
+// reused agent then, and the wait goes ahead past the new marks.
 export async function waitForAgent({
   timeoutMs = DEFAULTS.timeoutMs,
   marks = null,
+  restarted = false,
   dir = AGENT_DIR,
   platform = process.platform,
   pollMs = DEFAULTS.pollMs,
@@ -187,7 +207,7 @@ export async function waitForAgent({
   if (!fs.existsSync(dir)) {
     return { status: 'skipped', reason: `${dir} absent: harden-runner did not install an agent`, waitedMs: 0 };
   }
-  if (marks?.status?.size > 0) {
+  if (!restarted && marks?.status?.size > 0) {
     return {
       status: 'skipped',
       reason: 'agent.status existed before this job began: harden-runner reuses an installed agent rather than starting one',
@@ -286,42 +306,118 @@ function describe(result, timeoutMs, ownership) {
   }
 }
 
-// Wait for the agent as the inputs ask, publish the outcome as outputs,
-// and fail or warn when enforcement never arrived.
-export async function enforceAgentReadyPolicy(inputs, waiter = waitForAgent) {
+// Only a revert on a name this action reads as a transient resolver
+// failure is retried. A 'flagged' entry failed pre's check too and
+// will fail again; a revert naming no endpoint is not a resolver
+// failure at all; a timeout would spend the wait again; and a config
+// error repeats on every start.
+const RETRIED_OWNERSHIPS = new Set(['listed', 'implicit', 'unknown']);
+
+function ownershipOf(result, envVarName) {
+  if (result.status !== 'reverted' || !result.endpoint) return null;
+  return classifyEndpoint(result.endpoint, envVarName);
+}
+
+// Wait for the agent as the inputs ask, restart it after a transient
+// revert while attempts and time remain, publish the outcome as
+// outputs, and fail or warn when enforcement never arrived. Every
+// wait and restart shares one deadline, 'agent_timeout' from the
+// start of the first wait, and each gets only what remains. The restart
+// command, the marks and the clock are injectable so the tests need
+// neither systemd nor sudo.
+export async function enforceAgentReadyPolicy(inputs, waiter = waitForAgent, {
+  restart = restartAgent,
+  mark = markAgentFiles,
+  now = Date.now,
+} = {}) {
   const timeoutMs = inputs.agentTimeout * 1000;
   if (timeoutMs === 0) {
     setOutput('agent_status', 'disabled');
     setOutput('agent_wait_ms', '0');
     setOutput('agent_unresolved_endpoint', '');
+    setOutput('agent_restarts', '0');
     info('Not waiting for the harden-runner agent (agent_timeout: 0) ℹ️');
     return;
   }
+  const maxRestarts = inputs.agentRestartAttempts ?? DEFAULTS.restartAttempts;
 
-  const marks = parseMarks(process.env[`STATE_${MARKS_STATE}`] || '');
-  const result = await waiter({ timeoutMs, marks });
+  let marks = parseMarks(process.env[`STATE_${MARKS_STATE}`] || '');
+  const started = now();
+  const deadline = started + timeoutMs;
+  let result = await waiter({ timeoutMs, marks });
+  let ownership = ownershipOf(result, inputs.envVarName);
+  let restarts = 0;
+
+  while (RETRIED_OWNERSHIPS.has(ownership) && restarts < maxRestarts) {
+    // Fresh marks, so this start's verdict is not confused with the
+    // 'Reverted changes' or status the previous start wrote. Taken
+    // before the deadline check, so time spent marking cannot let a
+    // restart start after the deadline.
+    marks = mark();
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      info(`No time left within agent_timeout to restart harden-runner's agent ℹ️`);
+      break;
+    }
+    restarts += 1;
+    info(
+      `harden-runner's agent reverted its changes: it could not resolve ` +
+      `${result.endpoint} (${ownership}); restarting it, attempt ` +
+      `${restarts} of ${maxRestarts} 🔄`,
+    );
+    if (result.detail) {
+      info('Agent log (tail):');
+      info(result.detail);
+    }
+    try {
+      restart(remainingMs);
+    } catch (e) {
+      if (!restartInFlight(e)) {
+        info(`Restarting harden-runner's agent failed: ${e.message} ⚠️`);
+        continue;
+      }
+      // Restarting again could kill an agent the queued job has just
+      // started, so read its verdict from the agent files instead, with
+      // the same marks and deadline. A verdict means the job ran.
+      info(
+        `The restart command did not finish (${e.message}); systemd may ` +
+        "still be restarting harden-runner's agent, so waiting for it " +
+        'rather than restarting it again ⏳',
+      );
+    }
+    const next = await waiter({ timeoutMs: Math.max(0, deadline - now()), marks, restarted: true });
+    // A wait cannot skip once the agent has run; were it to, keep the
+    // revert rather than pass a job that has no filtering.
+    if (next.status === 'skipped') break;
+    result = next;
+    ownership = ownershipOf(result, inputs.envVarName);
+  }
+  if (restarts > 0) result = { ...result, waitedMs: now() - started };
+
   const endpoint = result.status === 'reverted' ? result.endpoint || '' : '';
   setOutput('agent_status', result.status);
   setOutput('agent_wait_ms', String(result.waitedMs));
   setOutput('agent_unresolved_endpoint', endpoint);
+  setOutput('agent_restarts', String(restarts));
 
   if (result.status === 'skipped') {
     info(`Not waiting for the harden-runner agent: ${result.reason} ℹ️`);
     return;
   }
+  const afterRestarts = restarts > 0 ? ` after ${restarts} restart(s)` : '';
   if (result.status === 'ready') {
-    info(`harden-runner agent ready: egress enforcement in place after ${result.waitedMs} ms ✅`);
+    info(`harden-runner agent ready: egress enforcement in place after ${result.waitedMs} ms${afterRestarts} ✅`);
     return;
   }
 
-  const ownership = endpoint ? classifyEndpoint(endpoint, inputs.envVarName) : null;
-  const message = describe(result, timeoutMs, ownership);
+  const described = describe(result, timeoutMs, ownership);
+  const message = restarts > 0 ? `${described}; still not ready${afterRestarts}` : described;
   if (result.detail && result.status !== 'failed') {
     info('Agent log (tail):');
     info(result.detail);
   }
   if (inputs.agentNotReady === 'error') {
-    fail(`${message} ❌`);
+    fail(`${message} ❌`, NOT_READY_TITLE);
   }
   annotate('warning', NOT_READY_TITLE, message);
   info(`${message}; continuing because agent_not_ready is 'warning' ⚠️`);

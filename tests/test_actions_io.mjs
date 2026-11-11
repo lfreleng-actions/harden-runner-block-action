@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  err,
   handOverOutputs,
   parseKeyValueFile,
   republishOutputs,
@@ -135,4 +136,32 @@ test('main publishes nothing when pre handed nothing over', () => {
     assert.equal(count, 0);
     assert.deepEqual(outputs, {});
   });
+});
+
+function captureErr(...args) {
+  let stdout = '';
+  let stderr = '';
+  const out = process.stdout.write;
+  const errw = process.stderr.write;
+  process.stdout.write = (s) => { stdout += s; return true; };
+  process.stderr.write = (s) => { stderr += s; return true; };
+  try {
+    err(...args);
+  } finally {
+    process.stdout.write = out;
+    process.stderr.write = errw;
+  }
+  return { stdout, stderr };
+}
+
+test('err emits an untitled error annotation by default', () => {
+  const r = captureErr('boom');
+  assert.equal(r.stdout, '::error::boom\n');
+  assert.equal(r.stderr, 'boom\n');
+});
+
+test('err carries an escaped title when given one', () => {
+  const r = captureErr('boom', 'a: b, c');
+  assert.equal(r.stdout, '::error title=a%3A b%2C c::boom\n');
+  assert.equal(r.stderr, 'boom\n');
 });

@@ -108,23 +108,24 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                    | Required | Default                 | Description                                                                                                                                                                                                                              |
-| ----------------------- | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_list_path`       | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                                                                                                 |
-| `url`                   | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                                                                                                 |
-| `org`                   | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted.                                                                         |
-| `env_var_name`          | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores), and must not be `HARDEN_RUNNER_EGRESS_POLICY` or `GH_TELEMETRY`, which the action publishes itself. |
-| `config`                | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                                                                                              |
-| `token`                 | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                                                                                                  |
-| `allow_list_summary`    | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                                                                                           |
-| `disable_gh_telemetry`  | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.                                                                              |
-| `supplemental_config`   | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.                                                                                |
-| `supplemental_unpinned` | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                              |
-| `supplemental_required` | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                         |
-| `extra_endpoints`       | No       | _empty_                 | Extra endpoints written inline: `host[:port]` tokens in the allow-list file format, merged after any supplemental list. For short-lived fixes. See [Inline extra endpoints](#inline-extra-endpoints).                                    |
-| `invalid_records`       | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                |
-| `agent_timeout`         | No       | `120`                   | Seconds the main step waits for harden-runner's agent to report that enforcement is in place. `0` disables the wait. See [Waiting for the agent](#waiting-for-the-agent).                                                                |
-| `agent_not_ready`       | No       | `error`                 | What to do when the agent never reports ready: `error` fails the step, `warning` annotates and continues. See [Waiting for the agent](#waiting-for-the-agent).                                                                           |
+| Name                     | Required | Default                 | Description                                                                                                                                                                                                                              |
+| ------------------------ | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_list_path`        | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                                                                                                 |
+| `url`                    | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                                                                                                 |
+| `org`                    | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted.                                                                         |
+| `env_var_name`           | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores), and must not be `HARDEN_RUNNER_EGRESS_POLICY` or `GH_TELEMETRY`, which the action publishes itself. |
+| `config`                 | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                                                                                              |
+| `token`                  | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                                                                                                  |
+| `allow_list_summary`     | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                                                                                           |
+| `disable_gh_telemetry`   | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.                                                                              |
+| `supplemental_config`    | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.                                                                                |
+| `supplemental_unpinned`  | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                              |
+| `supplemental_required`  | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                         |
+| `extra_endpoints`        | No       | _empty_                 | Extra endpoints written inline: `host[:port]` tokens in the allow-list file format, merged after any supplemental list. For short-lived fixes. See [Inline extra endpoints](#inline-extra-endpoints).                                    |
+| `invalid_records`        | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                |
+| `agent_timeout`          | No       | `120`                   | Seconds the main step waits for harden-runner's agent to report that enforcement is in place. `0` disables the wait. See [Waiting for the agent](#waiting-for-the-agent).                                                                |
+| `agent_not_ready`        | No       | `error`                 | What to do when the agent never reports ready: `error` fails the step, `warning` annotates and continues. See [Waiting for the agent](#waiting-for-the-agent).                                                                           |
+| `agent_restart_attempts` | No       | `2`                     | Times the main step restarts the agent after it reverted on a transient resolver failure, within the same `agent_timeout`. `0` disables. See [Restarting after a revert](#restarting-after-a-revert).                                    |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -156,6 +157,7 @@ steps:
 | `agent_status`              | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.                        |
 | `agent_wait_ms`             | Milliseconds the main step waited for the agent.                                                                                                                |
 | `agent_unresolved_endpoint` | Hostname the agent failed to resolve before it reverted. Empty unless `agent_status` is `reverted` and the agent log names one.                                 |
+| `agent_restarts`            | Times the main step restarted the agent after a transient revert. `agent_status` reports the outcome after the last restart.                                    |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -524,9 +526,11 @@ from the GitHub meta API and pre-resolves some 190 hostnames such as
 block mode. The `invalid_records` check cannot cover them because
 they are not in the list. When one of them fails to resolve, as a
 SERVFAIL from `dns.google` that clears within minutes does, the agent
-reverts; the main step names the endpoint, reports that no
-allow-list entry caused the revert, and re-running the job is the fix (see
-[Waiting for the agent](#waiting-for-the-agent)).
+reverts; the main step restarts the agent so it resolves the list
+again, up to `agent_restart_attempts` times. When every attempt
+reverts too, the step names the endpoint, reports that no allow-list
+entry caused the revert, and re-running the job is the fix (see
+[Restarting after a revert](#restarting-after-a-revert)).
 
 ### Checking a list without enforcing it
 
@@ -601,6 +605,13 @@ prevent, so `agent_not_ready` defaults to `error`:
 A failing step prints the tail of the agent log, which names the
 endpoint that did not resolve or shows how far the agent got.
 
+The error annotation, like the warning one, carries the title
+`harden-runner agent did not start`, so a tool reading check-run
+annotations can class the failure as infrastructure rather than as a
+defect of the change under test. The messages open with stable words
+too: `harden-runner's agent reverted its changes`, `... did not report
+ready` and `... reported an error`.
+
 On a revert the step also reads the hostname out of the agent log
 (`unable to resolve domain: <name>.`), publishes it as
 `agent_unresolved_endpoint`, and names it in the failure message (or
@@ -621,7 +632,9 @@ The published allow-list is the environment variable named by
 `env_var_name`, or the `allowed_endpoints` output when that variable
 is unset. Wildcard entries never reach the agent's pre-resolution, so
 an exact hostname match decides. When the endpoint is implicit, do
-not edit the allow-list: re-run the job.
+not edit the allow-list: re-run the job. Before failing, the step
+restarts the agent for the transient cases; see
+[Restarting after a revert](#restarting-after-a-revert).
 `agent_wait_ms` reports how long the wait took, which is how far past
 harden-runner's nine seconds the agent needed and so how much margin
 `agent_timeout` leaves.
@@ -668,6 +681,57 @@ will fail to resolve, so the agent reverts and the default `error`
 here fails the job. That is the intended reading of the two defaults
 together; a caller who wants the job to carry on unfiltered after a
 revert sets `agent_not_ready: warning`.
+
+### Restarting after a revert
+
+The agent gives up on the first lookup that fails, and it neither
+retries nor falls back to Cloudflare on a `SERVFAIL` from `dns.google`.
+With some 340 names to resolve, one transient answer reverts block
+mode. harden-runner's systemd unit sets no `Restart=`, so the agent
+then stays stopped.
+
+When the agent reverts on an endpoint the step reads as a transient
+failure, the step restarts it with `sudo -n systemctl restart
+agent.service` and waits again. The agent undid its DNS and firewall
+changes before it exited, so the restart resolves the same
+configuration from the start. Before each restart the step marks
+where the agent files end, so the earlier `Reverted changes` and status
+do not count, and logs the endpoint, its classification and the
+attempt number.
+
+<!-- markdownlint-disable MD013 -->
+
+| Outcome of the wait                                  | Restarted                                        |
+| ---------------------------------------------------- | ------------------------------------------------ |
+| Revert on an allow-list entry the pre-check resolved | Yes                                              |
+| Revert on an endpoint harden-runner adds itself      | Yes                                              |
+| Revert on an endpoint with no published allow-list   | Yes                                              |
+| Revert on an entry the pre-check flagged too         | No: a stale entry, which fails again             |
+| Revert whose log names no endpoint                   | No: not a resolver failure                       |
+| `timeout`                                            | No: a restart would spend the wait again         |
+| `failed`                                             | No: a configuration error repeats on every start |
+
+<!-- markdownlint-enable MD013 -->
+
+`agent_restart_attempts` (default `2`, three starts in all) caps the
+restarts, and `0` turns them off. Every wait and every restart shares
+the one `agent_timeout` budget: a restart never extends it, the wait
+after a restart gets whatever remains, and no restart starts once the
+budget runs out. A pass over a 150-name list takes nine to ten
+seconds, and two restarts fit within the default 120 seconds. A restart command
+that itself fails (no passwordless `sudo`, no systemd) counts as a
+spent attempt. The command has 15 seconds to finish, as harden-runner
+allows its own start, or what remains of `agent_timeout` when that is
+less. Killing the command at that timeout does not cancel a restart
+systemd has already queued, so the step does not restart the agent
+again then: it counts the attempt and waits for the agent's verdict
+with the same marks and deadline. A new revert shows the restart ran,
+and the next attempt may follow.
+
+`agent_restarts` reports the number of restarts, and `agent_status`
+the outcome after the last. When the attempts run out the
+`agent_not_ready` policy applies as before, and the message ends
+`still not ready after N restart(s)`.
 
 ## Supplemental per-org allow-lists
 

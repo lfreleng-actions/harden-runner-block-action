@@ -21,6 +21,7 @@ import {
   unresolvedEndpoint,
   waitForAgent,
 } from '../src/agent-ready.mjs';
+import { RESTART_TIMEOUT_MS, restartInFlight, restartTimeoutMs } from '../src/agent-restart.mjs';
 
 // A clock that advances only when the waiter sleeps. `onTick` runs
 // after each sleep with the new time, so a test can make the agent
@@ -314,7 +315,17 @@ const MARKS = { status: { size: 0, ino: 0 }, log: { size: 2048, ino: 43 } };
 // `env` sets further variables for the run, and `outputs` is what the
 // outputs file already holds, as it does once main has republished
 // pre's outputs.
-async function runPolicy(inputs, result, { env = {}, outputs = '' } = {}) {
+//
+// `result` is what the waiter returns, or an array of what each
+// successive wait returns (the last repeats). Restarts never reach
+// systemd: `restart` is a fake, by default one that succeeds at once,
+// and every call is recorded with the clock and the command timeout
+// it was given. The clock advances by each wait's waitedMs and by
+// whatever `restart` adds through its `advance` argument. `mark`
+// returns the fresh marks, and may advance the clock the same way.
+const FRESH_MARKS = { status: { size: 11, ino: 7 }, log: { size: 4096, ino: 43 } };
+
+async function runPolicy(inputs, result, { env = {}, outputs = '', restart = () => {}, mark = () => {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hrba-policy-'));
   const keys = ['GITHUB_OUTPUT', 'STATE_agent_files', 'CONNECTION_ALLOW_LIST', ...Object.keys(env)];
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
@@ -328,6 +339,10 @@ async function runPolicy(inputs, result, { env = {}, outputs = '' } = {}) {
   let stderr = '';
   let exitCode = null;
   let waiterArgs = null;
+  const waits = [];
+  const restarts = [];
+  const results = Array.isArray(result) ? result : [result];
+  let t = 0;
   const out = process.stdout.write;
   const errw = process.stderr.write;
   const exit = process.exit;
@@ -335,7 +350,27 @@ async function runPolicy(inputs, result, { env = {}, outputs = '' } = {}) {
   process.stderr.write = (s) => { stderr += s; return true; };
   process.exit = (code) => { exitCode = code; throw new Error('__exit__'); };
   try {
-    await enforceAgentReadyPolicy(inputs, async (args) => { waiterArgs = args; return result; });
+    await enforceAgentReadyPolicy(
+      inputs,
+      async (args) => {
+        if (waiterArgs === null) waiterArgs = args;
+        waits.push({ ...args, at: t });
+        const r = results[Math.min(waits.length - 1, results.length - 1)];
+        t += r?.waitedMs ?? 0;
+        return r;
+      },
+      {
+        restart: (remainingMs) => {
+          restarts.push({ at: t, remainingMs });
+          restart((ms) => { t += ms; }, remainingMs);
+        },
+        mark: () => {
+          mark((ms) => { t += ms; });
+          return FRESH_MARKS;
+        },
+        now: () => t,
+      },
+    );
   } catch (e) {
     if (e.message !== '__exit__') throw e;
   } finally {
@@ -349,7 +384,7 @@ async function runPolicy(inputs, result, { env = {}, outputs = '' } = {}) {
   }
   const output = fs.readFileSync(path.join(dir, 'output'), 'utf8');
   fs.rmSync(dir, { recursive: true, force: true });
-  return { stdout, stderr, exitCode, output, waiterArgs };
+  return { stdout, stderr, exitCode, output, waiterArgs, waits, restarts };
 }
 
 test('agent_timeout 0 disables the wait without calling the waiter', async () => {
@@ -388,7 +423,7 @@ test('error mode fails the step on a timeout', async () => {
     { status: 'timeout', detail: 'domain resolved: a.example.', waitedMs: 120_000 },
   );
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*did not report ready within 120\.0 s/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*did not report ready within 120\.0 s/);
   assert.match(r.stdout, /Agent log \(tail\):\ndomain resolved: a\.example\./);
   assert.match(r.output, /^agent_status=timeout$/m, 'outputs are published before failing');
 });
@@ -399,7 +434,7 @@ test('error mode fails the step on a revert, quoting the log', async () => {
     { status: 'reverted', detail: 'Reverted changes', waitedMs: 800 },
   );
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*reverted its changes after 0\.8 s/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*reverted its changes after 0\.8 s/);
   assert.match(r.stderr, /reverted its changes/);
 });
 
@@ -409,7 +444,7 @@ test('error mode fails the step on an agent error, quoting it', async () => {
     { status: 'failed', detail: 'Error reading config file', waitedMs: 300 },
   );
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*reported an error after 0\.3 s: Error reading config file/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*reported an error after 0\.3 s: Error reading config file/);
   assert.doesNotMatch(r.stdout, /Agent log \(tail\)/, 'the status text is the whole detail');
 });
 
@@ -437,7 +472,7 @@ test('a revert on an implicit endpoint names it and says to re-run', async () =>
     env: { CONNECTION_ALLOW_LIST: 'github.com:443 *.blob.core.windows.net:443 pypi.org:443' },
   });
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*reverted its changes after 0\.0 s/);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*reverted its changes after 0\.0 s/);
   assert.match(r.stdout, /productionresultssa128\.blob\.core\.windows\.net, which is not in the allow-list/);
   assert.match(r.stdout, /harden-runner adds it itself/);
   assert.match(r.stdout, /no allow-list entry caused the revert/);
@@ -480,7 +515,7 @@ test('a revert naming no endpoint keeps the plain message', async () => {
     env: { CONNECTION_ALLOW_LIST: 'github.com:443' },
   });
   assert.equal(r.exitCode, 1);
-  assert.match(r.stdout, /::error::.*the job has no egress filtering ❌$/m);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::.*the job has no egress filtering ❌$/m);
   assert.doesNotMatch(r.stdout, /could not resolve/);
   assert.match(r.output, /^agent_unresolved_endpoint=$/m);
 });
@@ -499,4 +534,266 @@ test('outputs carry no endpoint unless the agent reverted', async () => {
   assert.match(r.output, /^agent_unresolved_endpoint=$/m);
   const d = await runPolicy({ ...ERROR_INPUTS, agentTimeout: 0 });
   assert.match(d.output, /^agent_unresolved_endpoint=$/m);
+});
+
+// --- restarting the agent after a transient revert ----------------------
+
+const IMPLICIT_ENV = { env: { CONNECTION_ALLOW_LIST: 'github.com:443' } };
+const READY = { status: 'ready', waitedMs: 9_000 };
+const revertAfter = (waitedMs) => ({ ...IMPLICIT_RESULT, waitedMs });
+
+test('a revert then Initialized after one restart ends ready', async () => {
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(10_000), READY], IMPLICIT_ENV);
+  assert.equal(r.exitCode, null);
+  assert.equal(r.restarts.length, 1);
+  assert.match(r.output, /^agent_status=ready$/m);
+  assert.match(r.output, /^agent_restarts=1$/m);
+  assert.match(r.output, /^agent_wait_ms=19000$/m, 'both waits count');
+  assert.match(r.output, /^agent_unresolved_endpoint=$/m);
+  assert.match(r.stdout, new RegExp(`could not resolve ${IMPLICIT_HOST.replace(/\./g, '\\.')} \\(implicit\\); restarting it, attempt 1 of 2`));
+  assert.match(r.stdout, /enforcement in place after 19000 ms after 1 restart\(s\)/);
+  assert.doesNotMatch(r.stdout, /::error|::warning/);
+});
+
+test('the wait after a restart takes fresh marks and no reused-agent skip', async () => {
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(10_000), READY], IMPLICIT_ENV);
+  assert.deepEqual(r.waits[0], { timeoutMs: 120_000, marks: MARKS, at: 0 });
+  assert.deepEqual(r.waits[1], { timeoutMs: 110_000, marks: FRESH_MARKS, restarted: true, at: 10_000 });
+});
+
+test('a listed or unknown endpoint is retried too', async () => {
+  const listed = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), READY], {
+    env: { CONNECTION_ALLOW_LIST: `github.com:443 ${IMPLICIT_HOST}:443` },
+  });
+  assert.match(listed.stdout, /\(listed\); restarting it/);
+  assert.match(listed.output, /^agent_restarts=1$/m);
+  const unknown = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), READY]);
+  assert.match(unknown.stdout, /\(unknown\); restarting it/);
+  assert.match(unknown.output, /^agent_status=ready$/m);
+});
+
+test('a revert on a flagged endpoint restarts nothing', async () => {
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), READY], {
+    env: { CONNECTION_ALLOW_LIST: `github.com:443 ${IMPLICIT_HOST}:443` },
+    outputs: `invalid_records=${IMPLICIT_HOST}:443\n`,
+  });
+  assert.equal(r.restarts.length, 0);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.output, /^agent_restarts=0$/m);
+  assert.doesNotMatch(r.stdout, /restart/);
+});
+
+test('a revert naming no endpoint restarts nothing', async () => {
+  const r = await runPolicy(ERROR_INPUTS, [{ status: 'reverted', detail: 'Reverted changes', endpoint: '', waitedMs: 800 }, READY]);
+  assert.equal(r.restarts.length, 0);
+  assert.equal(r.exitCode, 1);
+});
+
+test('attempts spent ends failed with the count in the message', async () => {
+  const r = await runPolicy(ERROR_INPUTS, revertAfter(1_000), IMPLICIT_ENV);
+  assert.equal(r.restarts.length, 2);
+  assert.equal(r.waits.length, 3);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /::error title=harden-runner agent did not start::harden-runner's agent reverted its changes after 3\.0 s/);
+  assert.match(r.stdout, /still not ready after 2 restart\(s\) ❌$/m);
+  assert.match(r.output, /^agent_status=reverted$/m);
+  assert.match(r.output, /^agent_restarts=2$/m);
+  assert.match(r.output, /^agent_wait_ms=3000$/m);
+});
+
+test('warning mode annotates after the attempts are spent and continues', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, agentNotReady: 'warning' }, revertAfter(1_000), IMPLICIT_ENV);
+  assert.equal(r.exitCode, null);
+  assert.equal(r.restarts.length, 2);
+  assert.match(r.stdout, /::warning title=harden-runner agent did not start::.*after 2 restart\(s\)/);
+});
+
+test('agent_restart_attempts 0 restarts nothing', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, agentRestartAttempts: 0 }, [revertAfter(800), READY], IMPLICIT_ENV);
+  assert.equal(r.restarts.length, 0);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /reverted its changes after 0\.8 s .*re-run the job ❌$/m);
+  assert.doesNotMatch(r.stdout, /restart/);
+  assert.match(r.output, /^agent_restarts=0$/m);
+});
+
+test('agent_restart_attempts sets the number of restarts', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, agentRestartAttempts: 3 }, revertAfter(1_000), IMPLICIT_ENV);
+  assert.equal(r.restarts.length, 3);
+  assert.match(r.stdout, /attempt 3 of 3/);
+});
+
+test('the deadline is shared: a late restart gets only what remains', async () => {
+  // Reverts 100 s into a 120 s window; the restart itself takes 5 s.
+  const r = await runPolicy(
+    ERROR_INPUTS,
+    [revertAfter(100_000), { status: 'timeout', detail: '', waitedMs: 15_000 }],
+    { ...IMPLICIT_ENV, restart: (advance) => advance(5_000) },
+  );
+  assert.equal(r.restarts.length, 1, 'a timeout is not retried');
+  assert.equal(r.waits[1].timeoutMs, 15_000);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /did not report ready within 120\.0 s; the job may have no egress filtering; still not ready after 1 restart\(s\)/);
+  assert.match(r.output, /^agent_wait_ms=120000$/m);
+});
+
+// What execFileSync throws when it kills a command at its timeout.
+const timedOut = () => Object.assign(new Error('spawnSync sudo ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM', status: null });
+const TIMEOUT = { status: 'timeout', detail: '', waitedMs: 0 };
+
+test('a restart near the deadline gets only the time that remains', async () => {
+  // Reverts 110 s into a 120 s window: the restart command is given
+  // 10 s rather than its usual 15 s, uses all of it and times out.
+  // systemd may still be running it, so the agent files get one last
+  // look with no time left, and no further restart follows.
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(110_000), TIMEOUT], {
+    ...IMPLICIT_ENV,
+    restart: (advance, remainingMs) => {
+      advance(remainingMs);
+      throw timedOut();
+    },
+  });
+  assert.deepEqual(r.restarts, [{ at: 110_000, remainingMs: 10_000 }]);
+  assert.equal(r.waits.length, 2);
+  assert.deepEqual(r.waits[1], { timeoutMs: 0, marks: FRESH_MARKS, restarted: true, at: 120_000 });
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /did not report ready within 120\.0 s; .*still not ready after 1 restart\(s\) ❌$/m);
+  assert.match(r.output, /^agent_status=timeout$/m);
+  assert.match(r.output, /^agent_wait_ms=120000$/m);
+});
+
+test('a restart that times out at the client but completes in systemd ends ready', async () => {
+  // The client is killed after 15 s, but systemd runs the queued job
+  // and the agent comes up: the step waits for it, with the marks taken
+  // before the restart and the deadline unchanged, and restarts nothing
+  // more.
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), READY], {
+    ...IMPLICIT_ENV,
+    restart: (advance, remainingMs) => {
+      advance(Math.min(15_000, remainingMs));
+      throw timedOut();
+    },
+  });
+  assert.equal(r.restarts.length, 1, 'no second restart over an in-flight one');
+  assert.equal(r.waits.length, 2);
+  assert.deepEqual(r.waits[1], { timeoutMs: 104_000, marks: FRESH_MARKS, restarted: true, at: 16_000 });
+  assert.equal(r.exitCode, null);
+  assert.match(r.stdout, /systemd may still be restarting harden-runner's agent, so waiting for it rather than restarting it again/);
+  assert.doesNotMatch(r.stdout, /Restarting harden-runner's agent failed/);
+  assert.match(r.output, /^agent_status=ready$/m);
+  assert.match(r.output, /^agent_restarts=1$/m);
+  assert.match(r.output, /^agent_wait_ms=25000$/m);
+});
+
+test('a revert after a timed-out restart may be retried, the job having run', async () => {
+  let calls = 0;
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), revertAfter(1_000), READY], {
+    ...IMPLICIT_ENV,
+    restart: (advance) => {
+      calls += 1;
+      if (calls === 1) {
+        advance(15_000);
+        throw timedOut();
+      }
+    },
+  });
+  assert.equal(r.restarts.length, 2);
+  assert.equal(r.waits.length, 3);
+  assert.equal(r.exitCode, null);
+  assert.match(r.output, /^agent_status=ready$/m);
+});
+
+test('restartInFlight separates a killed client from a definite failure', () => {
+  assert.equal(restartInFlight(timedOut()), true);
+  assert.equal(restartInFlight(Object.assign(new Error('killed'), { signal: 'SIGKILL', status: null })), true);
+  assert.equal(restartInFlight(Object.assign(new Error('exit 1'), { signal: null, status: 1 })), false);
+  assert.equal(restartInFlight(Object.assign(new Error('spawnSync sudo ENOENT'), { code: 'ENOENT', signal: null, status: null })), false);
+  assert.equal(restartInFlight(new Error('sudo: a password is required')), false);
+});
+
+test('the restart command timeout is capped at the time remaining', () => {
+  assert.equal(RESTART_TIMEOUT_MS, 15_000);
+  assert.equal(restartTimeoutMs(10_000), 10_000);
+  assert.equal(restartTimeoutMs(60_000), 15_000);
+  assert.equal(restartTimeoutMs(0), 1);
+});
+
+test('no restart once the window is spent', async () => {
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(120_000), READY], IMPLICIT_ENV);
+  assert.equal(r.restarts.length, 0);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /No time left within agent_timeout/);
+  assert.match(r.output, /^agent_restarts=0$/m);
+});
+
+test('no restart when marking the files spends what remains', async () => {
+  // Reverts 119 s into a 120 s window, and taking the marks takes the
+  // last second: no restart is dispatched or counted.
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(119_000), READY], {
+    ...IMPLICIT_ENV,
+    mark: (advance) => advance(1_000),
+  });
+  assert.equal(r.restarts.length, 0);
+  assert.equal(r.waits.length, 1);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /No time left within agent_timeout/);
+  assert.doesNotMatch(r.stdout, /attempt 1 of/);
+  assert.match(r.output, /^agent_restarts=0$/m);
+});
+
+test('a restart command that fails counts as a spent attempt', async () => {
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), READY], {
+    ...IMPLICIT_ENV,
+    restart: () => { throw new Error('sudo: a password is required'); },
+  });
+  assert.equal(r.restarts.length, 2);
+  assert.equal(r.waits.length, 1, 'no wait follows a failed restart');
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /Restarting harden-runner's agent failed: sudo: a password is required/);
+  assert.match(r.stdout, /still not ready after 2 restart\(s\) ❌$/m);
+  assert.match(r.output, /^agent_restarts=2$/m);
+});
+
+test('a timeout or failed outcome restarts nothing', async () => {
+  const timeout = await runPolicy(ERROR_INPUTS, [{ status: 'timeout', detail: '', waitedMs: 120_000 }, READY]);
+  assert.equal(timeout.restarts.length, 0);
+  assert.equal(timeout.exitCode, 1);
+  assert.match(timeout.output, /^agent_restarts=0$/m);
+  const failed = await runPolicy(ERROR_INPUTS, [{ status: 'failed', detail: 'Error reading config file', waitedMs: 300 }, READY]);
+  assert.equal(failed.restarts.length, 0);
+  assert.equal(failed.exitCode, 1);
+  assert.match(failed.stdout, /::error title=harden-runner agent did not start::harden-runner's agent reported an error/);
+});
+
+test('a revert after a restart on a flagged endpoint stops the retries', async () => {
+  const flagged = { ...IMPLICIT_RESULT, endpoint: 'stale.example', waitedMs: 1_000 };
+  const r = await runPolicy(ERROR_INPUTS, [revertAfter(1_000), flagged], {
+    env: { CONNECTION_ALLOW_LIST: 'github.com:443 stale.example:443' },
+    outputs: 'invalid_records=stale.example:443\n',
+  });
+  assert.equal(r.restarts.length, 1);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /stale\.example, an allow-list entry that this action's pre-check could not resolve either/);
+  assert.match(r.output, /^agent_unresolved_endpoint=stale\.example$/m);
+});
+
+test('outputs carry agent_restarts 0 when the wait is disabled', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, agentTimeout: 0 });
+  assert.match(r.output, /^agent_restarts=0$/m);
+});
+
+// A restart this action made is not a reused agent, even though the
+// earlier start left an 'Initialized' in the status file.
+test('after a restart a pre-existing status file does not skip the wait', async () => {
+  await withAgentDir(async (dir) => {
+    const status = path.join(dir, 'agent.status');
+    fs.writeFileSync(status, 'Initialized');
+    const marks = markAgentFiles(dir);
+    const clock = fakeClock((t) => {
+      if (t === 1_000_000 + 500) fs.appendFileSync(status, 'Initialized');
+    });
+    const r = await wait(dir, clock, { marks, restarted: true });
+    assert.equal(r.status, 'ready');
+    assert.equal(r.waitedMs, 500);
+  });
 });
