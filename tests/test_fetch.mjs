@@ -165,6 +165,33 @@ test('a redirect without Location, and too many redirects, reject', async () => 
   });
 });
 
+test('an error status carries the status code', async () => {
+  await withServer((req, res) => {
+    res.writeHead(req.url === '/gone' ? 404 : 503);
+    res.end();
+  }, async (base) => {
+    await assert.rejects(httpsGet(`${base}/gone`, { request }), (e) => e.status === 404);
+    await assert.rejects(httpsGet(`${base}/down`, { request }), (e) => e.status === 503);
+  });
+});
+
+test('caller headers go with the first hop and never follow a redirect', async () => {
+  const seen = [];
+  await withServer((req, res) => {
+    seen.push([req.url, req.headers.authorization]);
+    if (req.url === '/start') {
+      res.writeHead(302, { Location: '/next' });
+      res.end();
+    } else {
+      res.end('ok');
+    }
+  }, async (base) => {
+    const body = await httpsGet(`${base}/start`, { request, headers: { Authorization: 'Bearer t0ken' } });
+    assert.equal(body, 'ok');
+  });
+  assert.deepEqual(seen, [['/start', 'Bearer t0ken'], ['/next', undefined]]);
+});
+
 test('an advertised oversize body is refused and cut off', async () => {
   await withServer((req, res, timers) => {
     res.writeHead(200, { 'Content-Length': String(MAX_RESPONSE_BYTES + 1) });

@@ -242,8 +242,10 @@ function applySupplemental(inputs, baseline) {
   return tokens;
 }
 
-// Resolve the config-mode allow-list and return its tokens. The caller
-// validates them and publishes the env var.
+// Resolve the config-mode allow-list and return its tokens, with the
+// org whose repository supplied them. The caller validates the tokens
+// and publishes the env var; the org is where the central egress
+// override is read from.
 export function runConfigFlow(inputs) {
   const { config, token, workflowOrg, summary } = inputs;
 
@@ -281,5 +283,5 @@ export function runConfigFlow(inputs) {
 
   // The resolver already wrote the step outputs and summary.
   info(`Loaded ${tokens.length} allow-list endpoints via config ✅`);
-  return tokens;
+  return { tokens, org: data.host_org };
 }

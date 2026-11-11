@@ -23,7 +23,9 @@ const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 // inactivity timer from ever firing.
 export const REQUEST_TIMEOUT_MS = 15000;
 
-function requestOptions(parsed) {
+// Build the request options. `headers` are the caller's extra headers
+// for this hop alone.
+function requestOptions(parsed, headers) {
   return {
     method: 'GET',
     hostname: parsed.hostname,
@@ -37,6 +39,7 @@ function requestOptions(parsed) {
     headers: {
       'User-Agent': 'lfreleng-actions/harden-runner-block-action',
       Accept: 'text/plain, */*;q=0.5',
+      ...headers,
     },
   };
 }
@@ -97,7 +100,10 @@ function collectBody(res, safe, finish) {
 
 // Fetch `urlString` over HTTPS, following up to `redirectsLeft` hops,
 // all of them within one absolute `deadline` (epoch milliseconds).
-// `request` is https.request unless a test substitutes it.
+// `headers` go with the first request only: a redirect may leave the
+// host they were meant for, and an Authorization header must not
+// follow it there. `request` is https.request unless a test
+// substitutes it.
 //
 // Every exit settles the promise once, stops the deadline timer and
 // destroys the request. A response this function will not consume (a
@@ -110,6 +116,7 @@ function collectBody(res, safe, finish) {
 // parameters never reach the logs.
 export function httpsGet(urlString, options = {}) {
   const {
+    headers = {},
     redirectsLeft = 5,
     deadline = Date.now() + REQUEST_TIMEOUT_MS,
     request = https.request,
@@ -145,7 +152,7 @@ export function httpsGet(urlString, options = {}) {
       else resolve(value);
     };
 
-    req = request(requestOptions(parsed), (res) => {
+    req = request(requestOptions(parsed, headers), (res) => {
       // Destroying the request can error the response; that is this
       // function's own doing once it has settled, and finish() ignores
       // it, but the listener must exist or the error is unhandled.
@@ -161,7 +168,11 @@ export function httpsGet(urlString, options = {}) {
         return;
       }
       if (status < 200 || status >= 300) {
-        finish(new Error(`HTTP ${status} fetching ${safe}`));
+        // The status travels with the error so a caller can tell an
+        // absent file (404) from a failure to read one.
+        const error = new Error(`HTTP ${status} fetching ${safe}`);
+        error.status = status;
+        finish(error);
         return;
       }
       collectBody(res, safe, finish);

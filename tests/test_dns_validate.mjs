@@ -279,7 +279,9 @@ test('ignore changes nothing', () => {
 });
 
 // Run the policy against temp runner files, capturing stdout.
-async function runPolicy(inputs, result) {
+// process.exit is stubbed so a failing step is observed rather than
+// ending the test process; `exitCode` is null when the step went on.
+async function runPolicy(inputs, result, tokens = TOKENS) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hrba-'));
   const files = Object.fromEntries(
     ['GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_STEP_SUMMARY'].map((k) => {
@@ -291,15 +293,26 @@ async function runPolicy(inputs, result) {
   const saved = Object.fromEntries(Object.keys(files).map((k) => [k, process.env[k]]));
   Object.assign(process.env, files);
   const write = process.stdout.write;
+  const writeErr = process.stderr.write;
+  const exit = process.exit;
   let stdout = '';
+  let exitCode = null;
   process.stdout.write = (s) => { stdout += s; return true; };
+  process.stderr.write = () => true;
+  process.exit = (code) => { exitCode = code; throw new Error('__exit__'); };
   try {
-    const tokens = await enforceInvalidRecordsPolicy(inputs, TOKENS, async () => ({
-      hostsChecked: 3, wildcardsSkipped: 0, elapsedMs: 5, ...result,
-    }));
+    let enforced = null;
+    try {
+      enforced = await enforceInvalidRecordsPolicy(inputs, tokens, async () => ({
+        hostsChecked: 3, wildcardsSkipped: 0, elapsedMs: 5, ...result,
+      }));
+    } catch (e) {
+      if (e.message !== '__exit__') throw e;
+    }
     const read = (k) => fs.readFileSync(files[k], 'utf8');
     return {
-      tokens,
+      tokens: enforced,
+      exitCode,
       stdout,
       env: read('GITHUB_ENV'),
       output: read('GITHUB_OUTPUT'),
@@ -307,6 +320,8 @@ async function runPolicy(inputs, result) {
     };
   } finally {
     process.stdout.write = write;
+    process.stderr.write = writeErr;
+    process.exit = exit;
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -360,4 +375,60 @@ test('a clean result reports success and changes nothing', async () => {
   assert.match(r.summary, /every hostname resolved/);
   assert.doesNotMatch(r.stdout, /^::/m);
   assert.doesNotMatch(r.output, /^allowed_endpoints=/m);
+});
+
+// --- the central egress override ----------------------------------------
+
+const ALL_INVALID = {
+  invalid: TOKENS.map((token) => ({ token, detail: 'NXDOMAIN (name does not exist)' })),
+  indeterminate: [],
+  degraded: false,
+};
+
+const policyLines = (env) => env.split('\n').filter((l) => l.startsWith('HARDEN_RUNNER_EGRESS_POLICY='));
+
+test('without the override, error mode fails and an all-invalid list is refused', async () => {
+  const error = await runPolicy({ invalidRecords: 'error', summary: true }, RESULT);
+  assert.equal(error.exitCode, 1);
+  assert.match(error.stdout, /::error::1 unresolvable allow-list entry found; failing/);
+  const empty = await runPolicy({ invalidRecords: 'filter', summary: true }, ALL_INVALID);
+  assert.equal(empty.exitCode, 1);
+  assert.match(empty.stdout, /refusing to publish an empty list/);
+});
+
+test('under the override, error mode warns instead of failing and publishes audit once', async () => {
+  const r = await runPolicy({ invalidRecords: 'error', summary: true, egressOverride: true }, RESULT);
+  assert.equal(r.exitCode, null);
+  assert.deepEqual(r.tokens, TOKENS, 'error mode keeps the list as it is');
+  assert.doesNotMatch(r.stdout, /::error/);
+  assert.match(r.stdout, /::warning title=Unresolvable allow-list entries::1 unresolvable allow-list entry found; not failing although invalid_records is 'error', continuing because the central egress override is active: gone\.example:443/);
+  assert.match(r.summary, /not failing although invalid_records is 'error'/);
+  assert.match(r.summary, /Egress policy published: `audit`/);
+  assert.deepEqual(policyLines(r.env), ['HARDEN_RUNNER_EGRESS_POLICY=audit']);
+  assert.deepEqual(r.output.split('\n').filter((l) => l.startsWith('egress_policy=')), ['egress_policy=audit']);
+});
+
+test('under the override, an all-invalid list is published unfiltered rather than refused', async () => {
+  const r = await runPolicy({ invalidRecords: 'filter', summary: true, egressOverride: true }, ALL_INVALID);
+  assert.equal(r.exitCode, null);
+  assert.deepEqual(r.tokens, TOKENS);
+  assert.match(r.stdout, /::warning title=Allow-list published unfiltered::/);
+  assert.match(r.stdout, /publishing the unfiltered list rather than an empty one/);
+  assert.match(r.summary, /publishing the unfiltered list rather than an empty one/);
+  assert.doesNotMatch(r.output, /^allowed_endpoints=/m, 'the earlier, unfiltered value stands');
+  assert.deepEqual(policyLines(r.env), ['HARDEN_RUNNER_EGRESS_POLICY=audit']);
+});
+
+test('under the override, filter still removes what it can, and publishes audit', async () => {
+  const r = await runPolicy({ invalidRecords: 'filter', summary: false, egressOverride: true }, RESULT);
+  assert.equal(r.exitCode, null);
+  assert.deepEqual(r.tokens, ['ok.example:443'], 'a hard-coded block job still gets the filtered list');
+  assert.deepEqual(policyLines(r.env), ['HARDEN_RUNNER_EGRESS_POLICY=audit']);
+});
+
+test('an inactive override leaves the mode\'s own policy in place, published once', async () => {
+  const warning = await runPolicy({ invalidRecords: 'warning', summary: false, egressOverride: false }, RESULT);
+  assert.deepEqual(policyLines(warning.env), ['HARDEN_RUNNER_EGRESS_POLICY=audit']);
+  const filter = await runPolicy({ invalidRecords: 'filter', summary: false, egressOverride: false }, RESULT);
+  assert.deepEqual(policyLines(filter.env), ['HARDEN_RUNNER_EGRESS_POLICY=block']);
 });

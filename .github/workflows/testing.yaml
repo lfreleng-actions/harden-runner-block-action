@@ -42,6 +42,16 @@ concurrency:
 
 permissions: {}
 
+# Every job here runs src/pre.mjs directly and asserts block-mode
+# behaviour: a published 'block', error-mode failures, an all-invalid
+# list refused. An organisation override set during an incident would
+# turn those into audit and warnings while working as intended, so the
+# suite opts out once, here, for every job and any added later. The
+# override itself is covered offline by tests/test_egress_override.mjs
+# and tests/test_pre_lifecycle.mjs, which set their own inputs.
+env:
+  INPUT_CENTRAL_OVERRIDE: "false"
+
 jobs:
   ### Happy path: valid local allow-list file. Asserts the action
   ### exits 0, writes the env var, writes outputs, and that the
@@ -554,6 +564,51 @@ jobs:
         run: |
           # Deadline, cut-off responses, redirects, size cap
           node --test tests/test_fetch.mjs
+
+  ### Unit tests for the central egress override.
+  ### No network access: the override file comes from a fake fetch and
+  ### the clock is fixed, so absent, active, expired, off, malformed
+  ### and unreadable files each take their deterministic path.
+  test-egress-override-units:
+    name: "Egress override: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run egress override unit tests"
+        shell: bash
+        run: |
+          # Grammar, expiry, candidate chain, fail-closed paths, outputs
+          node --test tests/test_egress_override.mjs
+
+  ### The real pre and main entry points, in child processes with the
+  ### network mocked: the override read before the DNS check, and the
+  ### policy, state and outputs agreeing across the two phases.
+  test-lifecycle-units:
+    name: "Pre/main lifecycle: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run lifecycle unit tests"
+        shell: bash
+        run: |
+          # Override before the DNS check; one policy; state to main
+          node --test tests/test_pre_lifecycle.mjs
 
   ### invalid_records, end to end against the real DoH providers.
   ###

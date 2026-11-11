@@ -15,6 +15,13 @@
 // a workflow with ten jobs reports a stale hostname once rather than
 // ten times. Every invocation still logs its findings to the console,
 // and 'error' mode fails every job, because a failing job must say why.
+//
+// This is also where the job's one egress policy is published. The
+// central egress override (egress-override.mjs) is read first and
+// arrives as inputs.egressOverride; while it is active the policy is
+// 'audit', and neither outcome that would end the step here ('error'
+// mode with invalid entries, or a list that filters to nothing) does:
+// both are reported, and the job goes on in audit mode.
 
 import {
   annotate,
@@ -28,10 +35,16 @@ import { applyMode, validateAllowList } from './dns-validate.mjs';
 
 // Published unconditionally, so a caller can wire
 //   egress-policy: ${{ env.HARDEN_RUNNER_EGRESS_POLICY }}
-// once and have 'warning' mode switch the job to audit.
+// once and have 'warning' mode, or the central override, switch the
+// job to audit.
 export const EGRESS_POLICY_ENV = 'HARDEN_RUNNER_EGRESS_POLICY';
 
 const TITLE_INDETERMINATE = 'Allow-list entries could not be validated';
+const UNDER_OVERRIDE = 'continuing because the central egress override is active';
+const TITLE_RESTORED = 'Allow-list published unfiltered';
+const RESTORED =
+  'Every allow-list entry failed DNS validation; publishing the ' +
+  `unfiltered list rather than an empty one, ${UNDER_OVERRIDE}`;
 
 function listEntries(records) {
   return records.map((r) => r.token).join(', ');
@@ -60,6 +73,12 @@ const CONSEQUENCES = {
     title: 'Unresolvable allow-list entries',
     text: "found; failing because invalid_records is 'error'",
   },
+  // 'error' mode while the central override holds the job in audit.
+  errorOverridden: {
+    level: 'warning',
+    title: 'Unresolvable allow-list entries',
+    text: `found; not failing although invalid_records is 'error', ${UNDER_OVERRIDE}`,
+  },
   ignore: {
     level: 'warning',
     title: 'Unresolvable allow-list entries: harden-runner fails open',
@@ -69,8 +88,9 @@ const CONSEQUENCES = {
   },
 };
 
-function consequence(mode, count) {
-  const { level, title, text } = CONSEQUENCES[mode];
+function consequence(mode, count, override = false) {
+  const key = override && mode === 'error' ? 'errorOverridden' : mode;
+  const { level, title, text } = CONSEQUENCES[key];
   const entries = count === 1 ? 'entry' : 'entries';
   return { level, title, text: `${count} unresolvable allow-list ${entries} ${text}` };
 }
@@ -109,7 +129,7 @@ function summaryTable(records, verdict) {
   );
 }
 
-function writeSummary(mode, result, outcome) {
+function writeSummary(mode, result, published) {
   const lines = ['', '### 🔎 Allow-list DNS validation', ''];
   lines.push(
     `- Mode (\`invalid_records\`): \`${mode}\``,
@@ -126,7 +146,7 @@ function writeSummary(mode, result, outcome) {
   lines.push(
     `- Invalid: **${result.invalid.length}**, ` +
     `indeterminate: **${result.indeterminate.length}**`,
-    `- Egress policy published: \`${outcome.egressPolicy}\``,
+    `- Egress policy published: \`${published.egressPolicy}\``,
     '',
     '| Entry | Verdict | Detail |',
     '| ----- | ------- | ------ |',
@@ -135,7 +155,10 @@ function writeSummary(mode, result, outcome) {
     '',
   );
   if (result.invalid.length > 0) {
-    lines.push(`${consequence(mode, result.invalid.length).text}.`, '');
+    lines.push(`${consequence(mode, result.invalid.length, published.override).text}.`, '');
+  }
+  if (published.restored) {
+    lines.push(`${RESTORED}.`, '');
   }
   if (result.indeterminate.length > 0) {
     lines.push(`Indeterminate entries: ${indeterminateNote(mode, result)}.`, '');
@@ -143,9 +166,9 @@ function writeSummary(mode, result, outcome) {
   stepSummary(lines.join('\n'));
 }
 
-function annotateFindings(mode, result) {
-  if (result.invalid.length > 0 && mode !== 'error') {
-    const c = consequence(mode, result.invalid.length);
+function annotateFindings(mode, result, override) {
+  if (result.invalid.length > 0 && (mode !== 'error' || override)) {
+    const c = consequence(mode, result.invalid.length, override);
     annotate(c.level, c.title, `${c.text}: ${listEntries(result.invalid)}`);
   }
   if (result.indeterminate.length > 0) {
@@ -160,11 +183,25 @@ function annotateFindings(mode, result) {
 }
 
 // Validate the allow-list tokens, enforce the configured mode and
-// publish the results. Returns the tokens the job should enforce.
+// publish the results, the job's egress policy among them. Returns the
+// tokens the job should enforce.
 export async function enforceInvalidRecordsPolicy(inputs, tokens, validate = validateAllowList) {
   const mode = inputs.invalidRecords;
+  const override = inputs.egressOverride === true;
   const result = await validate(tokens);
   const outcome = applyMode(mode, tokens, result);
+
+  // A list that filters to nothing is refused, except under the
+  // override, where the unfiltered list goes out instead: harden-runner
+  // in audit mode never resolves it, and an empty list in block mode
+  // would cut off every connection the job makes.
+  const restored = override && outcome.tokens.length === 0 && tokens.length > 0;
+  const enforced = restored ? tokens : outcome.tokens;
+  const published = {
+    egressPolicy: override ? 'audit' : outcome.egressPolicy,
+    override,
+    restored,
+  };
 
   logFindings(result);
 
@@ -175,32 +212,35 @@ export async function enforceInvalidRecordsPolicy(inputs, tokens, validate = val
     result.indeterminate.map((r) => r.token).join(' '),
   );
   setOutput('indeterminate_count', String(result.indeterminate.length));
-  setOutput('egress_policy', outcome.egressPolicy);
-  exportEnv(EGRESS_POLICY_ENV, outcome.egressPolicy);
+  setOutput('egress_policy', published.egressPolicy);
+  exportEnv(EGRESS_POLICY_ENV, published.egressPolicy);
 
   if (inputs.summary) {
-    if (mode !== 'ignore') writeSummary(mode, result, outcome);
-    annotateFindings(mode, result);
+    if (mode !== 'ignore') writeSummary(mode, result, published);
+    annotateFindings(mode, result, override);
+    if (restored) annotate('warning', TITLE_RESTORED, RESTORED);
   }
 
   if (outcome.fail) {
-    const c = consequence(mode, result.invalid.length);
-    fail(`${c.text}: ${listEntries(result.invalid)} ❌`);
+    const c = consequence(mode, result.invalid.length, override);
+    if (!override) fail(`${c.text}: ${listEntries(result.invalid)} ❌`);
+    info(`${c.text}: ${listEntries(result.invalid)} ⚠️`);
   }
 
-  if (outcome.tokens.length === 0) {
+  if (enforced.length === 0) {
     // Block mode with nothing allowed would break every connection the
     // job makes; that is a broken allow-list, not one to enforce.
     fail('Every allow-list entry failed DNS validation; refusing to publish an empty list ❌');
   }
+  if (restored) info(`${RESTORED} ⚠️`);
 
-  if (outcome.dropped.length > 0) {
+  if (!restored && outcome.dropped.length > 0) {
     info(`Filtered ${outcome.dropped.length} entr(y/ies) from the allow-list ✅`);
     // Earlier writes described the unfiltered list. GITHUB_OUTPUT is
     // read in order, so these later lines win.
-    setOutput('allowed_endpoints', outcome.tokens.join(' '));
-    setOutput('count', String(outcome.tokens.length));
+    setOutput('allowed_endpoints', enforced.join(' '));
+    setOutput('count', String(enforced.length));
   }
 
-  return outcome.tokens;
+  return enforced;
 }
