@@ -534,6 +534,29 @@ jobs:
           # Verdicts, provider fallback, retries, deadline and modes
           node --test tests/test_dns_validate.mjs
 
+  ### Unit tests for the central egress override.
+  ### No network access: the override file comes from a fake fetch and
+  ### the clock is fixed, so absent, active, expired, off, malformed
+  ### and unreadable files each take their deterministic path.
+  test-egress-override-units:
+    name: "Egress override: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run egress override unit tests"
+        shell: bash
+        run: |
+          # Grammar, expiry, candidate chain, fail-closed paths, outputs
+          node --test tests/test_egress_override.mjs
+
   ### invalid_records, end to end against the real DoH providers.
   ###
   ### 'does-not-exist.invalid' is guaranteed NXDOMAIN by RFC 6761, so

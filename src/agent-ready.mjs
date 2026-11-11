@@ -416,6 +416,14 @@ export async function enforceAgentReadyPolicy(inputs, waiter = waitForAgent, {
     info('Agent log (tail):');
     info(result.detail);
   }
+  // The central egress override (see egress-override.mjs) is an
+  // administrator's decision that jobs run today without enforcement
+  // rather than not at all; it outranks 'agent_not_ready: error'.
+  if (inputs.egressOverride) {
+    annotate('warning', NOT_READY_TITLE, message);
+    info(`${message}; continuing because the central egress override is active ⚠️`);
+    return;
+  }
   if (inputs.agentNotReady === 'error') {
     fail(`${message} ❌`, NOT_READY_TITLE);
   }

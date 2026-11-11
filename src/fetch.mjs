@@ -19,7 +19,9 @@ export const MAX_RESPONSE_BYTES = 1_048_576; // 1 MiB
 const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 const REQUEST_TIMEOUT_MS = 15000;
 
-function requestOptions(parsed) {
+// Build the request options. `headers` are the caller's extra headers
+// for this hop alone.
+function requestOptions(parsed, headers) {
   return {
     method: 'GET',
     hostname: parsed.hostname,
@@ -33,13 +35,16 @@ function requestOptions(parsed) {
     headers: {
       'User-Agent': 'lfreleng-actions/harden-runner-block-action',
       Accept: 'text/plain, */*;q=0.5',
+      ...headers,
     },
   };
 }
 
 // Resolve the next hop of a redirect, or reject when the response
 // cannot be followed. Every exit path drains the response stream so
-// the socket returns to the agent pool.
+// the socket returns to the agent pool. The caller's headers are not
+// carried to the next hop: a redirect may leave the host they were
+// meant for, and an Authorization header must not follow it there.
 function followRedirect(res, urlString, redirectsLeft, safe, resolve, reject) {
   res.resume();
   if (redirectsLeft <= 0) {
@@ -93,12 +98,13 @@ function collectBody(req, res, safe, resolve, reject) {
   res.on('error', reject);
 }
 
-// Fetch `urlString` over HTTPS, following up to `redirectsLeft` hops.
+// Fetch `urlString` over HTTPS, following up to `redirectsLeft` hops,
+// sending `headers` with the first request only.
 //
 // The full URL (with any credentials) reaches https.request; error
 // messages carry the redacted form only, so userinfo and query
 // parameters never reach the logs.
-export function httpsGet(urlString, redirectsLeft = 5) {
+export function httpsGet(urlString, redirectsLeft = 5, headers = {}) {
   const safe = redactUrl(urlString);
   return new Promise((resolve, reject) => {
     let parsed;
@@ -113,7 +119,7 @@ export function httpsGet(urlString, redirectsLeft = 5) {
       return;
     }
 
-    const req = https.request(requestOptions(parsed), (res) => {
+    const req = https.request(requestOptions(parsed, headers), (res) => {
       const status = res.statusCode || 0;
       if (REDIRECT_STATUSES.includes(status)) {
         followRedirect(res, urlString, redirectsLeft, safe, resolve, reject);
@@ -121,7 +127,11 @@ export function httpsGet(urlString, redirectsLeft = 5) {
       }
       if (status < 200 || status >= 300) {
         res.resume();
-        reject(new Error(`HTTP ${status} fetching ${safe}`));
+        // The status travels with the error so a caller can tell an
+        // absent file (404) from a failure to read one.
+        const error = new Error(`HTTP ${status} fetching ${safe}`);
+        error.status = status;
+        reject(error);
         return;
       }
       collectBody(req, res, safe, resolve, reject);

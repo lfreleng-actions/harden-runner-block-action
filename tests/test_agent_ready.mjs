@@ -529,6 +529,42 @@ test('warning mode annotates with the same diagnosis and continues', async () =>
   assert.match(r.stdout, /continuing because agent_not_ready is 'warning'/);
 });
 
+// --- central egress override -------------------------------------------
+
+test('an active central override turns a revert in error mode into a warning', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, egressOverride: true }, IMPLICIT_RESULT, {
+    env: { CONNECTION_ALLOW_LIST: 'github.com:443' },
+  });
+  assert.equal(r.exitCode, null);
+  assert.doesNotMatch(r.stdout, /::error/);
+  assert.match(r.stdout, /::warning title=harden-runner agent did not start::.*reverted its changes/);
+  assert.match(r.stdout, /continuing because the central egress override is active/);
+  assert.match(r.output, /^agent_status=reverted$/m, 'the outcome is still reported');
+  assert.equal(r.restarts.length, 2, 'the restarts are still attempted first');
+});
+
+test('an active central override turns a timeout and an agent error into warnings', async () => {
+  const t = await runPolicy({ ...ERROR_INPUTS, egressOverride: true }, { status: 'timeout', detail: '', waitedMs: 120_000 });
+  assert.equal(t.exitCode, null);
+  assert.match(t.stdout, /::warning title=harden-runner agent did not start::.*did not report ready/);
+  const f = await runPolicy({ ...ERROR_INPUTS, egressOverride: true }, { status: 'failed', detail: 'Error reading config file', waitedMs: 300 });
+  assert.equal(f.exitCode, null);
+  assert.match(f.stdout, /::warning title=harden-runner agent did not start::.*reported an error/);
+});
+
+test('without an override, error mode still fails', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, egressOverride: false }, { status: 'timeout', detail: '', waitedMs: 120_000 });
+  assert.equal(r.exitCode, 1);
+  assert.doesNotMatch(r.stdout, /central egress override/);
+});
+
+test('a ready agent under an override is reported ready like any other', async () => {
+  const r = await runPolicy({ ...ERROR_INPUTS, egressOverride: true }, { status: 'ready', waitedMs: 900 });
+  assert.equal(r.exitCode, null);
+  assert.doesNotMatch(r.stdout, /::warning/);
+  assert.match(r.output, /^agent_status=ready$/m);
+});
+
 test('outputs carry no endpoint unless the agent reverted', async () => {
   const r = await runPolicy(ERROR_INPUTS, { status: 'ready', waitedMs: 5 });
   assert.match(r.output, /^agent_unresolved_endpoint=$/m);
