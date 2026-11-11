@@ -550,7 +550,10 @@ test('a revert then Initialized after one restart ends ready', async () => {
   assert.match(r.output, /^agent_restarts=1$/m);
   assert.match(r.output, /^agent_wait_ms=19000$/m, 'both waits count');
   assert.match(r.output, /^agent_unresolved_endpoint=$/m);
-  assert.match(r.stdout, new RegExp(`could not resolve ${IMPLICIT_HOST.replace(/\./g, '\\.')} \\(implicit\\); restarting it, attempt 1 of 2`));
+  assert.ok(
+    r.stdout.includes(`could not resolve ${IMPLICIT_HOST} (implicit); restarting it, attempt 1 of 2`),
+    r.stdout,
+  );
   assert.match(r.stdout, /enforcement in place after 19000 ms after 1 restart\(s\)/);
   assert.doesNotMatch(r.stdout, /::error|::warning/);
 });
