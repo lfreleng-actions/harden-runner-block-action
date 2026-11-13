@@ -10,9 +10,11 @@
 # them is a breaking change for release purposes. See the README
 # section "The resolve-config sub-action".
 #
-# The sub-action installs nothing, calls no other action and never
-# writes GITHUB_ENV. A miss at an auto-derived path exits 0 with
-# found=false; the caller decides whether that is fatal.
+# The sub-action's only other action is a commit-pinned setup-python
+# with update-environment: false, so the interpreter it runs is not
+# the caller's PATH choice and the caller's job environment is left
+# alone. It never writes GITHUB_ENV. A miss at an auto-derived path
+# exits 0 with found=false; the caller decides whether that is fatal.
 
 name: "🔎 Resolve config source"
 description: >-
@@ -104,10 +106,22 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # The resolver runs under this interpreter, not one the caller's
+    # PATH picks; update-environment: false keeps it off the PATH and
+    # environment of the caller's later steps.
+    - name: "Set up Python"
+      id: python
+      # yamllint disable-line rule:line-length
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+      with:
+        python-version: "3.13"
+        update-environment: false
+
     - name: "Resolve config source"
       id: resolve
       shell: bash
       env:
+        PYTHON: ${{ steps.python.outputs.python-path }}
         RESOLVE_CONFIG: ${{ inputs.config }}
         RESOLVE_FAMILY: ${{ inputs.family }}
         RESOLVE_MODE: ${{ inputs.mode }}
@@ -125,8 +139,8 @@ runs:
         fi
         set -euo pipefail
 
-        if ! command -v python3 > /dev/null 2>&1; then
-          echo "::error::resolve-config needs python3 on PATH ❌"
+        if [ -z "${PYTHON:-}" ]; then
+          echo "::error::resolve-config got no setup-python interpreter ❌"
           exit 1
         fi
         # The value is not echoed: it could carry a workflow command.
@@ -146,7 +160,8 @@ runs:
         # -I -S keep PYTHON* variables and site-packages out of the
         # interpreter that holds the token.
         status=0
-        python3 -I -S "${GITHUB_ACTION_PATH}/../src/resolve_config_source.py" \
+        resolver="${GITHUB_ACTION_PATH}/../src/resolve_config_source.py"
+        "${PYTHON}" -I -S "${resolver}" \
           --config "${RESOLVE_CONFIG}" \
           --family "${RESOLVE_FAMILY}" \
           --mode "${RESOLVE_MODE}" \

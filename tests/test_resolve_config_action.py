@@ -108,6 +108,16 @@ def test_run_script_has_no_expressions() -> None:
     assert "GITHUB_ENV" not in script
 
 
+def test_resolver_runs_setup_python_interpreter() -> None:
+    text = _action_text()
+    assert "uses: actions/setup-python@" in text
+    assert "update-environment: false" in text
+    assert "PYTHON: ${{ steps.python.outputs.python-path }}" in text
+    script = run_script(text)
+    assert '"${PYTHON}" -I -S ' in script
+    assert not re.search(r"^\s*python3? ", script, re.MULTILINE)
+
+
 def test_declared_outputs_parser() -> None:
     text = (
         "name: x\n"
@@ -143,10 +153,12 @@ def test_run_script_parser() -> None:
 # ---------------------------------------------------------------------
 # Token isolation
 #
-# The step runs the resolver as 'python3 -I -S', so neither PYTHON*
+# The step runs the resolver as '"$PYTHON" -I -S', so neither PYTHON*
 # variables nor site-packages can load code into the interpreter that
-# holds the token. A hostile '.pth' file is the canonical attack: site
-# executes any line of it that starts with 'import'.
+# holds the token. In the action PYTHON is setup-python's python-path
+# output; the test points it at a hostile venv's interpreter. A hostile
+# '.pth' file is the canonical attack: site executes any line of it
+# that starts with 'import'.
 # ---------------------------------------------------------------------
 
 TOKEN_VAR = "RESOLVE_TOKEN"
@@ -196,6 +208,7 @@ def test_config_step_does_not_load_site_packages(tmp_path: Path) -> None:
     env = dict(
         os.environ,
         PATH=os.pathsep.join([str(venv_bin), str(stub_dir), os.environ["PATH"]]),
+        PYTHON=str(venv_bin / "python3"),
         GITHUB_ACTION_PATH=str(ACTION_FILE.parent),
         GITHUB_OUTPUT=str(tmp_path / "github_output"),
         GITHUB_STEP_SUMMARY=str(tmp_path / "step_summary"),
