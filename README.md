@@ -994,9 +994,13 @@ steps:
 
 <!-- markdownlint-enable MD013 -->
 
-The step needs `python3` and `git` on `PATH`, as GitHub-hosted runners
-provide. It installs nothing, calls no other action and never writes
-`GITHUB_ENV`.
+The sub-action runs the resolver under Python 3.13 from a
+commit-pinned `actions/setup-python` step, not under whatever `python3`
+the caller's `PATH` holds. That step sets `update-environment: false`,
+so it adds nothing to the `PATH` or environment of the caller's later
+steps. On a self-hosted runner without that version in its tool cache,
+setup-python downloads it. The step also needs `git` on `PATH`, as
+GitHub-hosted runners provide, and never writes `GITHUB_ENV`.
 
 ### resolve-config inputs
 
