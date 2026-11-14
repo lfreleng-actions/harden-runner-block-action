@@ -65,9 +65,17 @@ steps:
 
   - uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5  # v2.19.3
     with:
-      egress-policy: block
+      egress-policy: ${{ env.HARDEN_RUNNER_EGRESS_POLICY }}
       allowed-endpoints: ${{ env.CONNECTION_ALLOW_LIST }}
 ```
+
+`HARDEN_RUNNER_EGRESS_POLICY` is `block` unless the action has a
+reason to publish `audit`: the organisation's
+[central egress override](#central-egress-override) during an
+infrastructure incident, or `invalid_records: warning` finding a
+stale entry. A literal `egress-policy: block` works too, and still
+benefits from the override (the job runs, without filtering) but
+loses harden-runner's monitoring while it does.
 
 With no `allow_list_path`/`url` inputs, the action fetches the allow-list from:
 
@@ -108,24 +116,25 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                     | Required | Default                 | Description                                                                                                                                                                                                                              |
-| ------------------------ | -------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_list_path`        | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                                                                                                 |
-| `url`                    | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                                                                                                 |
-| `org`                    | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted.                                                                         |
-| `env_var_name`           | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores), and must not be `HARDEN_RUNNER_EGRESS_POLICY` or `GH_TELEMETRY`, which the action publishes itself. |
-| `config`                 | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                                                                                              |
-| `token`                  | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                                                                                                  |
-| `allow_list_summary`     | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                                                                                           |
-| `disable_gh_telemetry`   | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.                                                                              |
-| `supplemental_config`    | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.                                                                                |
-| `supplemental_unpinned`  | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                              |
-| `supplemental_required`  | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                         |
-| `extra_endpoints`        | No       | _empty_                 | Extra endpoints written inline: `host[:port]` tokens in the allow-list file format, merged after any supplemental list. For short-lived fixes. See [Inline extra endpoints](#inline-extra-endpoints).                                    |
-| `invalid_records`        | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                |
-| `agent_timeout`          | No       | `120`                   | Seconds the main step waits for harden-runner's agent to report that enforcement is in place. `0` disables the wait. See [Waiting for the agent](#waiting-for-the-agent).                                                                |
-| `agent_not_ready`        | No       | `error`                 | What to do when the agent never reports ready: `error` fails the step, `warning` annotates and continues. See [Waiting for the agent](#waiting-for-the-agent).                                                                           |
-| `agent_restart_attempts` | No       | `2`                     | Times the main step restarts the agent after it reverted on a transient resolver failure, within the same `agent_timeout`. `0` disables. See [Restarting after a revert](#restarting-after-a-revert).                                    |
+| Name                     | Required | Default                 | Description                                                                                                                                                                                                                               |
+| ------------------------ | -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_list_path`        | No       | _empty_                 | Local filesystem path to an allow-list file. Takes precedence over `url` and `org`. Must not contain newline characters.                                                                                                                  |
+| `url`                    | No       | _empty_                 | Remote URL to download. Ignored when `allow_list_path` has a value. Must not contain newline characters.                                                                                                                                  |
+| `org`                    | No       | _empty_                 | GitHub org used to construct the default URL when you supply neither `allow_list_path` nor `url`. Defaults at runtime to `github.repository_owner` when omitted.                                                                          |
+| `env_var_name`           | No       | `CONNECTION_ALLOW_LIST` | Name of the environment variable published to later steps. Must match `^[A-Z_][A-Z0-9_]*$` (uppercase letters, digits, underscores), and must not be `HARDEN_RUNNER_EGRESS_POLICY` or `GH_TELEMETRY`, which the action publishes itself.  |
+| `config`                 | No       | _empty_                 | `uses:`-style coordinate for a git-fetched, SHA-pinnable allow-list. Mutually exclusive with `allow_list_path`, `url` and `org`. See below.                                                                                               |
+| `token`                  | No       | _empty_                 | Token with `contents:read` for fetching a private host repo via `config`. Leave empty for public repos.                                                                                                                                   |
+| `allow_list_summary`     | No       | `true`                  | Write the allow-list/config block to the job step summary. Set `false` to suppress (e.g. on matrix legs other than the first). See note below.                                                                                            |
+| `disable_gh_telemetry`   | No       | `true`                  | Publish `GH_TELEMETRY=false` to later steps, turning off GitHub CLI telemetry for the rest of the job. A value the caller set already wins. See note below.                                                                               |
+| `central_override`       | No       | `true`                  | Consult the organisation's central egress override, which can move the job to audit mode for a bounded time. Set `false` for a job that must never run without egress filtering. See [Central egress override](#central-egress-override). |
+| `supplemental_config`    | No       | _empty_                 | A second allow-list, same grammar as `config`. The action merges its endpoints with the baseline instead of replacing them. Requires `config`. See below.                                                                                 |
+| `supplemental_unpinned`  | No       | `false`                 | Permit `supplemental_config` to omit `@ref` and follow the default branch. Restricted to the workflow's own org. See below.                                                                                                               |
+| `supplemental_required`  | No       | `false`                 | Treat a missing supplemental list as fatal. The default tolerates absence and continues with the baseline alone.                                                                                                                          |
+| `extra_endpoints`        | No       | _empty_                 | Extra endpoints written inline: `host[:port]` tokens in the allow-list file format, merged after any supplemental list. For short-lived fixes. See [Inline extra endpoints](#inline-extra-endpoints).                                     |
+| `invalid_records`        | No       | `filter`                | What to do with entries whose hostname does not resolve: `filter`, `warning`, `error` or `ignore`. See [DNS validation of the allow-list](#dns-checks-on-the-allow-list).                                                                 |
+| `agent_timeout`          | No       | `120`                   | Seconds the main step waits for harden-runner's agent to report that enforcement is in place. `0` disables the wait. See [Waiting for the agent](#waiting-for-the-agent).                                                                 |
+| `agent_not_ready`        | No       | `error`                 | What to do when the agent never reports ready: `error` fails the step, `warning` annotates and continues. See [Waiting for the agent](#waiting-for-the-agent).                                                                            |
+| `agent_restart_attempts` | No       | `2`                     | Times the main step restarts the agent after it reverted on a transient resolver failure, within the same `agent_timeout`. `0` disables. See [Restarting after a revert](#restarting-after-a-revert).                                     |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -133,31 +142,35 @@ steps:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                        | Description                                                                                                                                                     |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allowed_endpoints`         | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list or `extra_endpoints` contributed endpoints. |
-| `source`                    | One of `path`, `url`, `default-url`, `config`.                                                                                                                  |
-| `resolved_url`              | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead).                    |
-| `resolved_host_org`         | Host org that supplied the allow-list (`config` mode).                                                                                                          |
-| `resolved_repo`             | Repository that supplied the allow-list (`config` mode).                                                                                                        |
-| `resolved_ref`              | Git ref requested for the `config` fetch.                                                                                                                       |
-| `resolved_sha`              | Exact commit SHA the `config` ref resolved to.                                                                                                                  |
-| `resolved_path`             | In-repo path of the matched `config` file.                                                                                                                      |
-| `matched_candidate`         | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                                             |
-| `supplemental_source`       | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                                           |
-| `supplemental_count`        | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                                     |
-| `supplemental_sha`          | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                                                  |
-| `extra_count`               | Distinct entries in `extra_endpoints`. Empty when unset.                                                                                                        |
-| `extra_added`               | Space-separated entries `extra_endpoints` added that no loaded list carried, before the DNS check. Empty when none or unset.                                    |
-| `invalid_records`           | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                                                 |
-| `invalid_count`             | Number of entries in `invalid_records`.                                                                                                                         |
-| `indeterminate_records`     | Space-separated entries that reached no DNS verdict after retries.                                                                                              |
-| `indeterminate_count`       | Number of entries in `indeterminate_records`.                                                                                                                   |
-| `egress_policy`             | `audit` when `invalid_records: warning` found invalid entries, otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`.                              |
-| `agent_status`              | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.                        |
-| `agent_wait_ms`             | Milliseconds the main step waited for the agent.                                                                                                                |
-| `agent_unresolved_endpoint` | Hostname the agent failed to resolve before it reverted. Empty unless `agent_status` is `reverted` and the agent log names one.                                 |
-| `agent_restarts`            | Times the main step restarted the agent after a transient revert. `agent_status` reports the outcome after the last restart.                                    |
+| Name                        | Description                                                                                                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allowed_endpoints`         | The sanitised, space-separated allowed-endpoints allow-list string. Carries the merged set when a supplemental list or `extra_endpoints` contributed endpoints.                   |
+| `source`                    | One of `path`, `url`, `default-url`, `config`.                                                                                                                                    |
+| `resolved_url`              | The URL the action used when fetching remotely. Empty for `path` and `config` sources (`config` populates the `resolved_*` outputs instead).                                      |
+| `resolved_host_org`         | Host org that supplied the allow-list (`config` mode).                                                                                                                            |
+| `resolved_repo`             | Repository that supplied the allow-list (`config` mode).                                                                                                                          |
+| `resolved_ref`              | Git ref requested for the `config` fetch.                                                                                                                                         |
+| `resolved_sha`              | Exact commit SHA the `config` ref resolved to.                                                                                                                                    |
+| `resolved_path`             | In-repo path of the matched `config` file.                                                                                                                                        |
+| `matched_candidate`         | Search candidate that matched: `org-specific`, `family-default`, `sole-org-fallback` or `explicit`.                                                                               |
+| `supplemental_source`       | The supplemental list as an explicit, pinnable coordinate: `<org>/<repo>//<path>@<ref>`. Empty when unused or absent.                                                             |
+| `supplemental_count`        | Endpoints read from the supplemental list, before de-duplication against the baseline. Zero when absent; empty when unused.                                                       |
+| `supplemental_sha`          | Commit the action read the supplemental list from. For an unpinned list, the sole audit trail.                                                                                    |
+| `extra_count`               | Distinct entries in `extra_endpoints`. Empty when unset.                                                                                                                          |
+| `extra_added`               | Space-separated entries `extra_endpoints` added that no loaded list carried, before the DNS check. Empty when none or unset.                                                      |
+| `invalid_records`           | Space-separated entries whose hostname definitively failed DNS validation. Empty when none did.                                                                                   |
+| `invalid_count`             | Number of entries in `invalid_records`.                                                                                                                                           |
+| `indeterminate_records`     | Space-separated entries that reached no DNS verdict after retries.                                                                                                                |
+| `indeterminate_count`       | Number of entries in `indeterminate_records`.                                                                                                                                     |
+| `egress_policy`             | `audit` when the central egress override is active, or when `invalid_records: warning` found invalid entries; otherwise `block`. Also published as `HARDEN_RUNNER_EGRESS_POLICY`. |
+| `override_active`           | `true` when the central egress override moved this job to audit mode, otherwise `false`.                                                                                          |
+| `override_source`           | URL of the override file the action read or tried to read, whether active, off, expired, malformed or unreadable. Empty when none exists or `central_override` is `false`.        |
+| `override_until`            | Expiry of the active override, as written in the file. Empty when none is active.                                                                                                 |
+| `override_reason`           | The `reason` the active override gives, reduced to a safe character set. Empty when none is active or given.                                                                      |
+| `agent_status`              | Outcome of the wait for harden-runner's agent: `ready`, `timeout`, `reverted`, `failed`, `skipped` (no agent to wait for) or `disabled`.                                          |
+| `agent_wait_ms`             | Milliseconds the main step waited for the agent.                                                                                                                                  |
+| `agent_unresolved_endpoint` | Hostname the agent failed to resolve before it reverted. Empty unless `agent_status` is `reverted` and the agent log names one.                                                   |
+| `agent_restarts`            | Times the main step restarted the agent after a transient revert. `agent_status` reports the outcome after the last restart.                                                      |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -906,6 +919,156 @@ endpoints that the job allows because of this input alone.
 > A caller of a reusable workflow does not own the action's step, so
 > the reusable workflow has to expose an input and pass it through to
 > `extra_endpoints`.
+
+## Central egress override
+
+Block mode depends on infrastructure nobody in the organisation
+operates. harden-runner's agent resolves every allow-list hostname
+through `dns.google` once, with no retry, and reverts on the first
+SERVFAIL. When an upstream authoritative server flakes, as Canonical's
+did for the `ubuntu.com` archive hosts, most jobs in the estate fail
+at their first step, Dependabot's included, and the pull requests that
+would change the workflows fail the same way.
+
+The override is the organisation's switch for that day: one file, in
+the same `.github` repository as the allow-list, on a dedicated
+branch that administrators alone can write to. Setting it moves every
+job that loads the org's allow-list to audit mode, for a bounded time,
+with no pull request in the way; and nothing else.
+
+### What it can and cannot do
+
+- It loosens to `audit` and does nothing further. It cannot add an
+  endpoint, change where the allow-list comes from, or alter any
+  other input.
+- It must carry an expiry, at most 72 hours ahead. A forgotten switch
+  turns itself off; keeping it on means renewing it.
+- Every error path fails closed. A file that is absent, unreachable,
+  malformed, expired, too far ahead or set to `block` leaves the job
+  in block mode, and anything other than absence or expiry raises a
+  warning saying so.
+- Every job it affects says so: a log line in each invocation, and a
+  warning annotation plus a step-summary block where
+  `allow_list_summary` is true.
+- A job can refuse it: `central_override: false` never reads the
+  file. The default is `true`, so that nothing needs editing during
+  an incident; a release or publishing job that must never run
+  without egress filtering opts out.
+
+### What a job does under the override
+
+The action publishes `HARDEN_RUNNER_EGRESS_POLICY=audit` (and
+`egress_policy: audit`) in place of the `block` the DNS check
+published, and records the override for its main step. From there it
+depends on the harden-runner step's `egress-policy`:
+
+<!-- markdownlint-disable MD013 -->
+
+| harden-runner `egress-policy`            | Effect under the override                                                                                                                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `${{ env.HARDEN_RUNNER_EGRESS_POLICY }}` | harden-runner runs in **audit** mode: nothing is pre-resolved, so the agent never reverts, and its monitoring and run insights stay on. The recommended form.                                       |
+| `block` (literal)                        | harden-runner still runs in block mode, so the agent may revert. The main step then **warns and continues** rather than failing: the job runs with no egress filtering, and its annotation says so. |
+
+<!-- markdownlint-enable MD013 -->
+
+In both cases the override outranks `agent_not_ready: error` for the
+duration: an administrator has decided that jobs run today
+without enforcement rather than not at all. The main step still
+attempts its `agent_restart_attempts`, so a job gets enforcement
+whenever the agent manages it. The `agent_status` output reports what
+happened, and `override_active` says the override was the reason the
+job went on.
+
+### Where the file lives
+
+The action looks on the `harden-runner-ops` branch of the `.github`
+repository of the org that hosts the allow-list (the resolved host org
+in `config` mode, else the `org` input, else the workflow's own org),
+in a directory named for the **workflow's own org** and then the
+family directory:
+
+1. `.github/harden-runner/<workflow org>/egress_override.txt`
+2. `.github/harden-runner/egress_override.txt`
+
+The first that exists decides. That is the allow-list's own search
+chain: an `onap` workflow loading `lfreleng-actions`' list reads
+`lfreleng-actions/.github` at `harden-runner/onap/` first, so ONAP can
+hold its jobs at `block` (or flip them alone) while the host's
+family-level file flips everyone else. The action reads the file from
+`raw.githubusercontent.com` like a default-URL allow-list, so it gains
+no new egress, and by the fully qualified ref
+`refs/heads/harden-runner-ops`, so a tag of the same name cannot stand
+in for the protected branch. A change propagates within the service's
+cache time, about five minutes.
+
+A private host repository answers an anonymous read with 404, so the
+`token` input, when given, goes with the request as a bearer token. It
+goes to `raw.githubusercontent.com` alone, and the fetcher drops it on
+any redirect.
+
+Pin nothing here: the override is a fixed branch that administrators
+move on purpose, and a `config` SHA pin on the allow-list does not
+affect it.
+
+### File format
+
+Plain `key=value` lines; a line starting with `#` is a comment:
+
+```text
+# Flipped during the Canonical DNS incident; renew or remove by the
+# time below.
+egress_policy=audit
+until=2026-11-12T18:00:00Z
+reason=Canonical authoritative DNS answering SERVFAIL via dns.google
+```
+
+<!-- markdownlint-disable MD013 -->
+
+| Key             | Required     | Value                                                                                                                                                                                     |
+| --------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `egress_policy` | Yes          | `audit` to switch the override on, `block` to switch it off while leaving the file in place. Lower-case.                                                                                  |
+| `until`         | With `audit` | UTC time the override expires, `YYYY-MM-DDTHH:MM[:SS]Z` (what `date -u +%FT%TZ` prints). Must name a real calendar date ahead of now and within 72 hours, or the action ignores the file. |
+| `reason`        | No           | Free text for the annotation and step summary, reduced to letters, digits, space and `. , ; : ' ( ) / _ # -`, and 200 characters.                                                         |
+
+<!-- markdownlint-enable MD013 -->
+
+An empty file, or one holding nothing but comments, switches the
+override off. An unknown key, a repeated key, a line that is not
+`key=value`, or an `until` in another format makes the file invalid,
+which means block mode and a warning.
+
+### Setting up the branch
+
+Once, in the `.github` repository:
+
+1. Create the `harden-runner-ops` branch from the default branch.
+2. Add a repository ruleset targeting that branch: restrict creation,
+   update and deletion, require signed commits, and put the
+   organisation administrators (or the release-engineering team) on
+   the bypass list. Nobody else can then change the switch, and the
+   branch's history and the organisation audit log record who did.
+3. Commit `.github/harden-runner/egress_override.txt` holding
+   `egress_policy=block`, so the path exists and a later edit is a
+   diff rather than a new file.
+
+During an incident, an administrator edits the file on that branch in
+the web UI or pushes a signed commit to it, setting `egress_policy`
+to `audit` with an `until` and a `reason`. Afterwards, set it back to
+`block`, or let it expire.
+
+### Why not an organisation variable
+
+An organisation Actions variable is administrator-set and audited,
+but an action cannot read one unless every workflow passes it in,
+and a reusable workflow sees the _caller's_ variables, so a variable
+in one org never reaches the jobs of another org that calls its
+shared workflows. Reading variables through the REST API needs an
+`actions: read` token that most jobs do not hold. A file on the
+default branch needs a pull request or an administrator bypass push
+to a protected branch. The dedicated branch has none of these
+problems: every job that already fetches the allow-list can reach it,
+administrators can write it without a pull request, and a ruleset
+rather than convention protects it.
 
 ## Allow-list file format
 

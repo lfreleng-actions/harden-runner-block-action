@@ -14,7 +14,7 @@ import { checkSupplementalTrust } from './supplemental.mjs';
 // hyphens, must not start or end with a hyphen, and must not contain
 // consecutive hyphens. Enforcing all four constraints here stops a
 // misconfigured value producing a default URL that can never resolve.
-const ORG_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+export const ORG_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 const ENV_VAR_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -160,6 +160,10 @@ export function readInputs() {
     summary: getInput('allow_list_summary', 'true') !== 'false',
     disableGhTelemetry:
       getInput('disable_gh_telemetry', 'true') !== 'false',
+    centralOverride: strictBool(
+      'central_override',
+      getInput('central_override', 'true'),
+    ),
     envVarName: getInput('env_var_name', 'CONNECTION_ALLOW_LIST'),
     extraEndpoints: validateExtraEndpoints(getInput(EXTRA_INPUT)),
     invalidRecords: getInput('invalid_records', 'filter').trim().toLowerCase(),

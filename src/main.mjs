@@ -22,13 +22,16 @@
 
 import { fail, info, republishOutputs } from './actions-io.mjs';
 import { enforceAgentReadyPolicy } from './agent-ready.mjs';
+import { overrideFromState } from './egress-override.mjs';
 import { readInputs } from './inputs.mjs';
 
 async function main() {
   const count = republishOutputs();
   info(`Allow-list loader main step: published ${count} output(s) from pre ✅`);
 
-  await enforceAgentReadyPolicy(readInputs());
+  // Pre records whether the central egress override was active; an
+  // agent that never enforces is then a warning, not a failure.
+  await enforceAgentReadyPolicy({ ...readInputs(), egressOverride: overrideFromState() });
 }
 
 main().catch((e) => {
