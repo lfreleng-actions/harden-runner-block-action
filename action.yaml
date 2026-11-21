@@ -33,6 +33,13 @@ description: >
 #     takes the agent longer than that, and restarts the agent after a
 #     transient revert (inputs: agent_timeout, agent_not_ready,
 #     agent_restart_attempts).
+#   - The pre step also reads the organisation's central egress
+#     override, a 'key=value' file on the 'harden-runner-ops' branch of
+#     the same '.github' repository that holds the allow-list. An
+#     administrator sets 'egress_policy=audit' there, with an expiry,
+#     to move every job to audit mode during an infrastructure
+#     incident that block mode cannot survive, with no pull request
+#     in the way (input: central_override; see the README).
 
 inputs:
   allow_list_path:
@@ -119,6 +126,24 @@ inputs:
       competes with genuine findings. A value the caller set already
       wins, so 'GH_TELEMETRY=log' for debugging survives. Set to
       'false' to leave the environment untouched.
+    required: false
+    default: "true"
+  central_override:
+    description: >
+      Whether to consult the organisation's central egress override:
+      '.github/harden-runner/<workflow org>/egress_override.txt' (then
+      '.github/harden-runner/egress_override.txt') on the
+      'harden-runner-ops' branch of the '.github' repository of the org
+      that hosts the allow-list the job loads, read with 'token' when
+      given. When that file says 'egress_policy=audit' with an 'until'
+      time still ahead (at most 72 h away), the action publishes
+      HARDEN_RUNNER_EGRESS_POLICY=audit and 'egress_policy: audit', so a
+      harden-runner step that reads the variable runs in audit mode,
+      and the main step warns instead of failing when the agent does
+      not enforce. A file that is absent, unreadable, malformed,
+      expired or set to 'block' leaves the job in block mode. Set to
+      'false' for a job that must never run without egress filtering,
+      whatever the organisation decides.
     required: false
     default: "true"
   supplemental_config:
@@ -323,19 +348,37 @@ outputs:
       Number of entries in 'indeterminate_records'.
   egress_policy:
     description: >
-      The egress policy the action recommends: 'audit' when
-      'invalid_records' is 'warning' and invalid entries were found,
-      otherwise 'block'. Also published as the
-      HARDEN_RUNNER_EGRESS_POLICY environment variable, which is the
-      form a harden-runner step's 'with:' can read.
+      The egress policy the action recommends: 'audit' when the central
+      egress override is active, or when 'invalid_records' is 'warning'
+      and invalid entries were found; otherwise 'block'. Also published
+      as the HARDEN_RUNNER_EGRESS_POLICY environment variable, which is
+      the form a harden-runner step's 'with:' can read.
+  override_active:
+    description: >
+      'true' when the central egress override moved this job to audit
+      mode, otherwise 'false'.
+  override_source:
+    description: >
+      URL of the override file the action read or tried to read,
+      whether it was active, off, expired, malformed or unreadable.
+      Empty when no file exists or the input is 'false'.
+  override_until:
+    description: >
+      Expiry of the active override, as written in the file. Empty
+      when no override is active.
+  override_reason:
+    description: >
+      The 'reason' the override file gives, reduced to a safe character
+      set. Empty when no override is active or none was given.
   agent_status:
     description: >
       What the wait for harden-runner's agent found: 'ready' when the
       agent reported enforcement in place; 'timeout', 'reverted' or
       'failed' when it did not (the step fails unless 'agent_not_ready'
-      is 'warning'); 'skipped' when there was no agent to wait for (none
-      installed, a reused pre-installed agent, or not Linux); 'disabled'
-      when 'agent_timeout' is 0.
+      is 'warning' or the central egress override is active); 'skipped'
+      when there was no agent to wait for (none installed, a reused
+      pre-installed agent, or not Linux); 'disabled' when
+      'agent_timeout' is 0.
   agent_wait_ms:
     description: >
       Milliseconds the main step spent waiting for the agent. Shows how

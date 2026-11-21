@@ -15,10 +15,13 @@
 //   4. Validates every allow-list hostname in DNS the way
 //      harden-runner's agent will, and applies the 'invalid_records'
 //      policy (see dns-policy.mjs).
-//   5. Publishes it as the configured env var (default
+//   5. Reads the organisation's central egress override, which can
+//      move the job to audit mode for a bounded time during an
+//      infrastructure incident (see egress-override.mjs).
+//   6. Publishes it as the configured env var (default
 //      CONNECTION_ALLOW_LIST) so that any later action's pre hook
 //      can read it.
-//   6. Publishes step outputs and a step-summary line.
+//   7. Publishes step outputs and a step-summary line.
 //
 // It also turns off GitHub CLI telemetry for the rest of the job
 // (see applyGhTelemetryPolicy), which belongs here because the point
@@ -49,6 +52,7 @@ import { httpsGet, readLocalFile } from './fetch.mjs';
 import { sanitise } from './sanitise.mjs';
 import { runConfigFlow } from './config-flow.mjs';
 import { enforceInvalidRecordsPolicy } from './dns-policy.mjs';
+import { applyEgressOverride } from './egress-override.mjs';
 import { applyExtraEndpoints } from './extra-endpoints.mjs';
 
 async function loadContent({ source, filePath, url, displayUrl }) {
@@ -102,7 +106,10 @@ function applyGhTelemetryPolicy(inputs) {
   info('GitHub CLI telemetry disabled for later steps ✅');
 }
 
-// Path/URL sources: load, sanitise and report. Returns the tokens.
+// Path/URL sources: load, sanitise and report. Returns the tokens and
+// the org whose special repository the central egress override is
+// read from: the one named by 'org' or, failing that, the workflow's
+// own, which is also where the default URL points.
 async function runLegacyFlow(inputs) {
   const resolved = resolveSource(inputs);
   const sanitised = sanitise(await loadContent(resolved));
@@ -119,7 +126,7 @@ async function runLegacyFlow(inputs) {
   if (inputs.summary) {
     publishSummary({ ...resolved, count: tokens.length, envVarName: inputs.envVarName });
   }
-  return tokens;
+  return { tokens, org: inputs.org !== '' ? inputs.org : inputs.workflowOrg };
 }
 
 async function main() {
@@ -140,9 +147,13 @@ async function main() {
 
   // Order: baseline, supplemental, extra. Merged before the DNS check,
   // so a mistyped extra entry meets 'invalid_records' like any other.
-  const merged = applyExtraEndpoints(inputs, loaded);
+  const merged = applyExtraEndpoints(inputs, loaded.tokens);
 
   const tokens = await enforceInvalidRecordsPolicy(inputs, merged);
+
+  // After the DNS check, whose egress policy an active override
+  // replaces; the list itself is enforced as filtered either way.
+  await applyEgressOverride(inputs, loaded.org);
 
   // The env var is what step-security/harden-runner's pre hook reads.
   exportEnv(inputs.envVarName, tokens.join(' '));
