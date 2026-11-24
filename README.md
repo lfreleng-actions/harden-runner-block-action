@@ -7,7 +7,7 @@
 
 <!-- prettier-ignore-start -->
 <!-- markdownlint-disable-next-line MD013 -->
-[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/harden-runner-block-action) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![pre-commit.ci status badge]][pre-commit.ci results page] [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/harden-runner-block-action/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/harden-runner-block-action)
+[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/harden-runner-block-action) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/harden-runner-block-action/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/harden-runner-block-action)
 <!-- prettier-ignore-end -->
 
 A Node.js GitHub Action that loads an allowed-endpoints egress
@@ -1124,6 +1124,3 @@ loads directly (relative imports, no resolution step):
   from forks as it does for direct branches.
 - If you customise `env_var_name`, make sure the downstream
   harden-runner step reads `${{ env.<that-name> }}` to match.
-
-[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/harden-runner-block-action/main
-[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/harden-runner-block-action/main.svg
