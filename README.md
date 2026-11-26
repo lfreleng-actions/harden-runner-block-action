@@ -1068,7 +1068,9 @@ small `main:` hook:
      `$GITHUB_ENV` writes safe from injection.
    - **Read or fetch** the allow-list (file read for
      `allow_list_path`, `https.request` with redirect handling and
-     a 15s timeout for URL/default-url).
+     one 15-second deadline across every hop for URL/default-url;
+     the fetcher cuts off a response it does not consume rather than
+     draining it).
    - **Sanitise** the content (drop BOM/comments, collapse
      whitespace, check every token against a strict allow-list and
      port range).
@@ -1105,7 +1107,7 @@ loads directly (relative imports, no resolution step):
 | `src/pre.mjs`             | Pre entrypoint: orchestrates the steps above and hands the outputs over to `main`.   |
 | `src/main.mjs`            | Main entrypoint: publishes the outputs `pre` handed over.                            |
 | `src/inputs.mjs`          | Reads and validates inputs, resolves which source to use.                            |
-| `src/fetch.mjs`           | Size-capped HTTPS fetch (redirects, timeout) and local file read.                    |
+| `src/fetch.mjs`           | Size-capped, deadline-bounded HTTPS fetch (redirects) and local file read.           |
 | `src/sanitise.mjs`        | Token parsing and strict host/port validation.                                       |
 | `src/config-flow.mjs`     | Drives the shared Python resolver for the `config` input, and merges a supplemental. |
 | `src/supplemental.mjs`    | Pure helpers for the supplemental list: spec parsing, the trust rule, the merge.     |

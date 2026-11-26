@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2026 The Linux Foundation
 //
-// Allow-list retrieval: a size-capped HTTPS fetcher and a local file
-// reader, both bounded by MAX_RESPONSE_BYTES.
+// Allow-list retrieval: a size-capped, deadline-bounded HTTPS fetcher
+// and a local file reader, both bounded by MAX_RESPONSE_BYTES.
 
 import * as fs from 'node:fs';
 import * as https from 'node:https';
@@ -17,7 +17,11 @@ import { fail, redactUrl } from './actions-io.mjs';
 export const MAX_RESPONSE_BYTES = 1_048_576; // 1 MiB
 
 const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
-const REQUEST_TIMEOUT_MS = 15000;
+// The whole fetch, redirects included, must finish within this. It is
+// a deadline rather than an inactivity timeout: a server that trickles
+// a byte at a time, or a DNS lookup that never answers, would keep an
+// inactivity timer from ever firing.
+export const REQUEST_TIMEOUT_MS = 15000;
 
 function requestOptions(parsed) {
   return {
@@ -37,32 +41,38 @@ function requestOptions(parsed) {
   };
 }
 
-// Resolve the next hop of a redirect, or reject when the response
-// cannot be followed. Every exit path drains the response stream so
-// the socket returns to the agent pool.
-function followRedirect(res, urlString, redirectsLeft, safe, resolve, reject) {
-  res.resume();
-  if (redirectsLeft <= 0) {
-    reject(new Error(`Too many redirects fetching ${safe}`));
-    return;
-  }
-  const next = res.headers.location;
-  if (!next) {
-    reject(new Error(`Redirect without Location header from ${safe}`));
-    return;
-  }
-  resolve(httpsGet(new URL(next, urlString).toString(), redirectsLeft - 1));
+function timeoutError(safe) {
+  return new Error(`Timeout (deadline reached) fetching ${safe}`);
 }
 
-// Buffer the response body, aborting as soon as it exceeds the cap.
-function collectBody(req, res, safe, resolve, reject) {
+// The next hop of a redirect as { url }, or { error } when the
+// response cannot be followed. A Location that is not a URL is an
+// error like any other, rather than an exception thrown out of the
+// response callback where nothing would catch it.
+function redirectTarget(res, urlString, redirectsLeft, safe) {
+  if (redirectsLeft <= 0) {
+    return { error: new Error(`Too many redirects fetching ${safe}`) };
+  }
+  const location = res.headers.location;
+  if (!location) {
+    return { error: new Error(`Redirect without Location header from ${safe}`) };
+  }
+  try {
+    return { url: new URL(location, urlString).toString() };
+  } catch {
+    return { error: new Error(`Redirect with an invalid Location header from ${safe}`) };
+  }
+}
+
+// Buffer the response body, settling through `finish` as soon as it
+// ends or exceeds the cap.
+function collectBody(res, safe, finish) {
   // Pre-check Content-Length when the server advertises one; the
   // runtime byte-counter below catches chunked / lying responses that
   // omit or understate the header.
   const advertised = Number.parseInt(res.headers['content-length'] || '', 10);
   if (Number.isFinite(advertised) && advertised > MAX_RESPONSE_BYTES) {
-    res.resume();
-    reject(new Error(
+    finish(new Error(
       `Response too large: Content-Length ${advertised} exceeds ` +
       `${MAX_RESPONSE_BYTES}-byte limit fetching ${safe}`,
     ));
@@ -74,14 +84,7 @@ function collectBody(req, res, safe, resolve, reject) {
   res.on('data', (chunk) => {
     received += chunk.length;
     if (received > MAX_RESPONSE_BYTES) {
-      // Abort the in-flight request. req.destroy(err) triggers the
-      // req-level 'error' handler, which is the path that actually
-      // rejects the Promise. We do not call reject() directly here
-      // because doing so in addition to req.destroy() would either
-      // double-reject (no-op after the first) or race the 'error'
-      // handler; letting destroy() drive the rejection keeps the flow
-      // single-sourced.
-      req.destroy(new Error(
+      finish(new Error(
         `Response too large: exceeded ${MAX_RESPONSE_BYTES}-byte ` +
         `limit fetching ${safe}`,
       ));
@@ -89,16 +92,28 @@ function collectBody(req, res, safe, resolve, reject) {
     }
     chunks.push(chunk);
   });
-  res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-  res.on('error', reject);
+  res.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
 }
 
-// Fetch `urlString` over HTTPS, following up to `redirectsLeft` hops.
+// Fetch `urlString` over HTTPS, following up to `redirectsLeft` hops,
+// all of them within one absolute `deadline` (epoch milliseconds).
+// `request` is https.request unless a test substitutes it.
 //
-// The full URL (with any credentials) reaches https.request; error
+// Every exit settles the promise once, stops the deadline timer and
+// destroys the request. A response this function will not consume (a
+// redirect, an error status, an oversized body) is therefore cut off
+// rather than drained: draining would download whatever the server
+// cares to send, and keep the process alive while it does.
+//
+// The full URL (with any credentials) reaches the request; error
 // messages carry the redacted form only, so userinfo and query
 // parameters never reach the logs.
-export function httpsGet(urlString, redirectsLeft = 5) {
+export function httpsGet(urlString, options = {}) {
+  const {
+    redirectsLeft = 5,
+    deadline = Date.now() + REQUEST_TIMEOUT_MS,
+    request = https.request,
+  } = options;
   const safe = redactUrl(urlString);
   return new Promise((resolve, reject) => {
     let parsed;
@@ -112,27 +127,48 @@ export function httpsGet(urlString, redirectsLeft = 5) {
       reject(new Error(`Refusing non-https URL: ${safe}`));
       return;
     }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      reject(timeoutError(safe));
+      return;
+    }
 
-    const req = https.request(requestOptions(parsed), (res) => {
+    let settled = false;
+    let timer;
+    let req;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.destroy();
+      if (error) reject(error);
+      else resolve(value);
+    };
+
+    req = request(requestOptions(parsed), (res) => {
+      // Destroying the request can error the response; that is this
+      // function's own doing once it has settled, and finish() ignores
+      // it, but the listener must exist or the error is unhandled.
+      res.on('error', (e) => finish(e));
       const status = res.statusCode || 0;
       if (REDIRECT_STATUSES.includes(status)) {
-        followRedirect(res, urlString, redirectsLeft, safe, resolve, reject);
+        const next = redirectTarget(res, urlString, redirectsLeft, safe);
+        if (next.error) {
+          finish(next.error);
+          return;
+        }
+        finish(null, httpsGet(next.url, { redirectsLeft: redirectsLeft - 1, deadline, request }));
         return;
       }
       if (status < 200 || status >= 300) {
-        res.resume();
-        reject(new Error(`HTTP ${status} fetching ${safe}`));
+        finish(new Error(`HTTP ${status} fetching ${safe}`));
         return;
       }
-      collectBody(req, res, safe, resolve, reject);
+      collectBody(res, safe, finish);
     });
 
-    req.on('error', reject);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(
-        `Timeout (${REQUEST_TIMEOUT_MS / 1000}s) fetching ${safe}`,
-      ));
-    });
+    req.on('error', (e) => finish(e));
+    timer = setTimeout(() => finish(timeoutError(safe)), remaining);
     req.end();
   });
 }

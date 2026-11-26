@@ -534,6 +534,27 @@ jobs:
           # Verdicts, provider fallback, retries, deadline and modes
           node --test tests/test_dns_validate.mjs
 
+  ### Unit tests for the HTTPS fetcher, over a local socket server:
+  ### deadlines, cut-off responses, redirects and the size cap.
+  test-fetch-units:
+    name: "HTTPS fetch: unit tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Run HTTPS fetch unit tests"
+        shell: bash
+        run: |
+          # Deadline, cut-off responses, redirects, size cap
+          node --test tests/test_fetch.mjs
+
   ### invalid_records, end to end against the real DoH providers.
   ###
   ### 'does-not-exist.invalid' is guaranteed NXDOMAIN by RFC 6761, so
