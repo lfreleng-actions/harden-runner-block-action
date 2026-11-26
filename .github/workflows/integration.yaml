@@ -75,6 +75,10 @@ jobs:
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions/harden-runner-block-action//tests/fixtures/allow_list_with_invalid.txt@main'
+          # This job asserts block mode. An organisation override set
+          # during an incident would otherwise move it to audit and
+          # fail the assertions below while working as intended.
+          central_override: false
 
       # Sibling harden-runner step. Its pre: hook reads
       # ${{ env.CONNECTION_ALLOW_LIST }} and
